@@ -416,8 +416,13 @@ class WhoAtMePlugin(Star):
                 self._disable_llm(event)
             return
 
-        mentions = self._mentions(event)
         sender_id = self._sender_id(event)
+        self_id = self._self_id(event)
+        if sender_id and self_id and sender_id == self_id:
+            await self.delete_kv_data(self._reminder_pending_key(group_id, self_id))
+            return
+
+        mentions = self._mentions(event)
         if is_plugin_command:
             self._stop_event(event)
             self._disable_llm(event)
@@ -558,7 +563,8 @@ class WhoAtMePlugin(Star):
         if reminder_context_on and current:
             await self._append_reminder_after_context(group_id, current)
 
-        targets = [target for target in mentions if target != self._sender_id(event)]
+        self_id = self._self_id(event)
+        targets = [target for target in mentions if target not in {self._sender_id(event), self_id}]
         if targets:
             before = list(self.before_cache.get(group_id, [])) if context_on else []
             reminder_before_count = int(reminder_context.get("before", 1))
@@ -648,6 +654,8 @@ class WhoAtMePlugin(Star):
         before: list[dict[str, Any]],
     ) -> bool:
         if target == ALL_TARGET:
+            return False
+        if target == self._self_id(event):
             return False
         if not await self._reminder_group_enabled(event, group_id):
             return False
