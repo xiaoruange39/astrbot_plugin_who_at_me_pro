@@ -32,6 +32,12 @@
         "type": "int",
         "default": 5,
         "hint": "原版默认前后各 5 条。"
+      },
+      "query_sort_order": {
+        "description": "查询结果排序方式",
+        "type": "string",
+        "default": "asc",
+        "hint": "asc=正序，旧消息在上、最新消息在下；desc=倒序，最新消息在上。"
       }
     }
   },

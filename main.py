@@ -752,9 +752,10 @@ class WhoAtMePlugin(Star):
         if not records:
             return [event.plain_result("目前还没有人艾特")]
 
-        records.sort(key=lambda item: item.get("time", 0), reverse=True)
+        query_reverse = self._query_reverse_order()
+        records.sort(key=lambda item: item.get("time", 0), reverse=query_reverse)
         target_name = self._target_name(event, target)
-        blocks = self._build_blocks(records, target_name)
+        blocks = self._build_blocks(records, target_name, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
         if not chunks:
             return [event.plain_result(self._plain_summary(records, target_name))]
@@ -2046,6 +2047,10 @@ class WhoAtMePlugin(Star):
 
     def _max_messages_per_image(self) -> int:
         return max(1, self._config_int("record", "max_messages_per_image", default=MAX_MESSAGES_PER_IMAGE))
+
+    def _query_reverse_order(self) -> bool:
+        value = self._config_str("record", "query_sort_order", default="asc").strip().lower()
+        return value in {"desc", "倒序", "reverse", "newest_first", "latest_first", "最新在上"}
 
     def _render_quality(self) -> int:
         return min(100, max(1, self._config_int("render", "image_quality", default=RENDER_IMAGE_QUALITY)))
