@@ -1,0 +1,138 @@
+{
+  "record": {
+    "description": "记录查询配置",
+    "type": "object",
+    "items": {
+      "max_records_per_target": {
+        "description": "每个群成员最多保留的艾特记录数",
+        "type": "int",
+        "default": 300,
+        "hint": "超过后会保留最新记录。"
+      },
+      "max_messages_per_image": {
+        "description": "单张查询图最多展示的消息条数",
+        "type": "int",
+        "default": 12,
+        "hint": "记录较多时会自动分多张图。"
+      },
+      "query_context_max_messages": {
+        "description": "查询上下文最多缓存消息条数",
+        "type": "int",
+        "default": 5,
+        "hint": "原版默认前后各 5 条。"
+      }
+    }
+  },
+  "reminder": {
+    "description": "艾特提醒配置",
+    "type": "object",
+    "items": {
+      "default_group_enabled": {
+        "description": "新群默认开启被动艾特提醒",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时仍可用 #开启本群艾特提醒 单独开启。"
+      },
+      "default_user_enabled": {
+        "description": "用户默认接收艾特提醒",
+        "type": "bool",
+        "default": true,
+        "hint": "用户可用 #关闭我的艾特提醒 关闭。"
+      },
+      "away_minutes": {
+        "description": "离开判定分钟数",
+        "type": "int",
+        "default": 10,
+        "hint": "超过这个时间未在群里发言，被艾特才会进入待提醒队列。"
+      },
+      "max_pending_reminders": {
+        "description": "每人每群最多保留的待提醒记录数",
+        "type": "int",
+        "default": 50,
+        "hint": "超过后保留最新记录。"
+      },
+      "default_context_enabled": {
+        "description": "默认开启提醒截图上下文",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后提醒截图可展示艾特前后消息。"
+      },
+      "default_context_before": {
+        "description": "默认提醒截图前文条数",
+        "type": "int",
+        "default": 1
+      },
+      "default_context_after": {
+        "description": "默认提醒截图后文条数",
+        "type": "int",
+        "default": 1
+      },
+      "max_context_messages": {
+        "description": "提醒上下文最大条数",
+        "type": "int",
+        "default": 5,
+        "hint": "Web 配置和群命令设置都会受这个上限限制。"
+      }
+    }
+  },
+  "render": {
+    "description": "图片渲染配置",
+    "type": "object",
+    "items": {
+      "prefer_browser": {
+        "description": "优先使用 Playwright/Chromium 浏览器渲染",
+        "type": "bool",
+        "default": true
+      },
+      "image_quality": {
+        "description": "JPEG 图片质量",
+        "type": "int",
+        "default": 92,
+        "hint": "范围建议 60-100。"
+      },
+      "browser_timeout_seconds": {
+        "description": "单次渲染总超时秒数",
+        "type": "int",
+        "default": 25
+      },
+      "page_timeout_ms": {
+        "description": "浏览器页面加载超时毫秒数",
+        "type": "int",
+        "default": 20000
+      },
+      "header_image_url": {
+        "description": "结果图顶部状态栏图片 URL",
+        "type": "string",
+        "default": "https://pic1.imgdb.cn/item/69e60edc1d6508f56becb8fa.png"
+      },
+      "footer_image_url": {
+        "description": "结果图底部图片 URL",
+        "type": "string",
+        "default": "https://pic1.imgdb.cn/item/69e5f9e51d6508f56bec8ea5.png"
+      },
+      "cleanup_render_hours": {
+        "description": "渲染临时图片保留小时数",
+        "type": "int",
+        "default": 24
+      }
+    }
+  },
+  "message": {
+    "description": "提示文案配置",
+    "type": "object",
+    "items": {
+      "waiting_text_template": {
+        "description": "查询等待提示模板",
+        "type": "string",
+        "default": "让{bot_name}看看谁艾特过你哦，稍等一下~",
+        "hint": "可用变量：{bot_name}"
+      },
+      "reminder_text_template": {
+        "description": "回群提醒提示模板",
+        "type": "string",
+        "default": "{target_name}，你不在的时候有 {count} 条艾特记录~",
+        "hint": "可用变量：{target_name}、{count}"
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+name: astrbot_plugin_who_at_me
+display_name: 谁艾特我
+desc: 记录群聊里谁艾特过你，并支持查询、清理和上下文记录。
+short_desc: 查询谁在群里艾特过你。
+version: v1.1.1
+author: xiaoruange39
+repo: "https://github.com/xiaoruange39/astrbot_plugin_who_at_me"
+astrbot_version: ">=4.9.2,<5"
