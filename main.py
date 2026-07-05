@@ -562,8 +562,7 @@ class WhoAtMePlugin(Star):
 
         key = self._reminder_pending_key(group_id, target)
         pending = await self._get_pending_reminders(group_id, target)
-        dedupe_key = self._record_identity(pending_record)
-        if any(self._record_identity(item) == dedupe_key or self._records_are_duplicate(item, pending_record) for item in pending):
+        if any(self._records_are_duplicate(item, pending_record) for item in pending):
             return False
 
         pending.append(pending_record)
@@ -949,12 +948,10 @@ class WhoAtMePlugin(Star):
             blocks.append(
                 {
                     "at_time": record.get("time", 0),
-                    "main_key": self._render_message_key(main),
                     "msgs": self._dedupe_messages(messages),
                 }
             )
 
-        blocks = self._dedupe_blocks(blocks)
         blocks.sort(key=lambda item: item["at_time"], reverse=reverse)
         return blocks
 
@@ -1005,28 +1002,6 @@ class WhoAtMePlugin(Star):
         result = list(seen.values())
         result.sort(key=lambda item: item.get("sort_time", 0))
         return result
-
-    def _dedupe_blocks(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        deduped: list[dict[str, Any]] = []
-        for block in blocks:
-            for idx, existing in enumerate(deduped):
-                if (
-                    existing.get("main_key") == block.get("main_key")
-                    and abs(self._record_time(existing) - self._record_time(block)) <= 3
-                ):
-                    if self._record_time(block) >= self._record_time(existing):
-                        deduped[idx] = block
-                    break
-            else:
-                deduped.append(block)
-        return deduped
-
-    def _render_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
-        return (
-            msg.get("user_id"),
-            self._normalize_record_text(msg.get("message")),
-            tuple(msg.get("images") or []),
-        )
 
     def _chunk_blocks(self, blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         chunks: list[list[dict[str, Any]]] = []
@@ -1470,15 +1445,6 @@ class WhoAtMePlugin(Star):
             lines.append(f"... 还有 {len(records) - 20} 条")
         return "\n".join(lines)
 
-    def _record_identity(self, record: dict[str, Any]) -> tuple[Any, ...]:
-        return (
-            record.get("message_id"),
-            record.get("user_id") or record.get("User"),
-            record.get("time"),
-            record.get("message"),
-            tuple(record.get("images") or record.get("image") or []),
-        )
-
     def _records_are_duplicate(self, left: dict[str, Any], right: dict[str, Any], window_seconds: int = 3) -> bool:
         left_message_id = str(left.get("message_id") or "")
         right_message_id = str(right.get("message_id") or "")
@@ -1511,7 +1477,7 @@ class WhoAtMePlugin(Star):
 
     def _record_time(self, record: dict[str, Any]) -> int:
         try:
-            return int(float(record.get("time") or record.get("at_time") or 0))
+            return int(float(record.get("time") or 0))
         except (TypeError, ValueError):
             return 0
 
