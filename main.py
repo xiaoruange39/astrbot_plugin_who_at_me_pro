@@ -44,6 +44,7 @@ MAX_PENDING_REMINDERS = 50
 MAX_REMINDER_CONTEXT = 5
 HEADER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e60edc1d6508f56becb8fa.png"
 FOOTER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e5f9e51d6508f56bec8ea5.png"
+REFERENCE_SEGMENT_TYPES = {"reply", "quote", "source", "reference"}
 
 
 HTML_TEMPLATE = r"""
@@ -201,6 +202,68 @@ HTML_TEMPLATE = r"""
       border: 1px solid #eee;
       object-fit: contain;
     }
+    .quote-card {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 9px;
+      padding: 8px 10px;
+      background: rgba(255,255,255,0.72);
+      border-radius: 8px;
+      border: 1px solid rgba(0,0,0,0.06);
+      max-width: 100%;
+    }
+    .quote-card::before {
+      content: "";
+      flex: 0 0 3px;
+      align-self: stretch;
+      border-radius: 3px;
+      background: #b8bcc3;
+    }
+    .quote-body {
+      min-width: 0;
+      flex: 1;
+    }
+    .quote-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+      color: #555;
+      font-size: 13px;
+      line-height: 1.25;
+      font-weight: 700;
+    }
+    .quote-name {
+      max-width: 160px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .quote-time {
+      color: #999;
+      font-weight: 600;
+    }
+    .quote-text {
+      color: #333;
+      font-size: 14px;
+      line-height: 1.35;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .quote-images {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .quote-img {
+      display: block;
+      max-width: 112px;
+      max-height: 112px;
+      border-radius: 6px;
+      border: 1px solid #e5e7eb;
+      object-fit: cover;
+    }
     .msg-time-bottom {
       margin: 6px 0 0 4px;
       color: #b0b0b0;
@@ -266,10 +329,32 @@ HTML_TEMPLATE = r"""
                     <span class="nickname">{{ msg.nickname }}</span>
                   </div>
                   <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
-                    <div class="msg-text">
-                      {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}
-                      {{ msg.message_html | safe }}
-                    </div>
+                    {% if msg.quote %}
+                      <div class="quote-card">
+                        <div class="quote-body">
+                          <div class="quote-head">
+                            <span class="quote-name">{{ msg.quote.nickname }}</span>
+                            {% if msg.quote.time_text %}<span class="quote-time">{{ msg.quote.time_text }}</span>{% endif %}
+                          </div>
+                          {% if msg.quote.message_html %}
+                            <div class="quote-text">{{ msg.quote.message_html | safe }}</div>
+                          {% endif %}
+                          {% if msg.quote.images %}
+                            <div class="quote-images">
+                              {% for image in msg.quote.images %}
+                                <img src="{{ image }}" class="quote-img" />
+                              {% endfor %}
+                            </div>
+                          {% endif %}
+                        </div>
+                      </div>
+                    {% endif %}
+                    {% if msg.is_at or msg.has_message %}
+                      <div class="msg-text">
+                        {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}
+                        {% if msg.has_message %}{{ msg.message_html | safe }}{% endif %}
+                      </div>
+                    {% endif %}
                     {% for image in msg.images %}
                       <img src="{{ image }}" class="msg-img" />
                     {% endfor %}
@@ -445,7 +530,8 @@ class WhoAtMePlugin(Star):
             if mentions or context_on or reminder_context_on
             else {}
         )
-        current = self._context_message(event, sender_info) if context_on or reminder_context_on else None
+        quote = await self._quote(event) if mentions or context_on or reminder_context_on else None
+        current = self._context_message(event, sender_info, quote) if context_on or reminder_context_on else None
 
         if context_on and current:
             await self._append_after_context(group_id, current)
@@ -461,7 +547,7 @@ class WhoAtMePlugin(Star):
                 if reminder_context_on and reminder_before_count > 0
                 else []
             )
-            record = self._mention_record(event, targets, sender_info)
+            record = self._mention_record(event, targets, sender_info, quote)
             if context_on:
                 record["is_context"] = True
                 record["before"] = before
@@ -604,7 +690,7 @@ class WhoAtMePlugin(Star):
                 image_path = await self._render_query_image(
                     {
                         "blocks": chunk,
-                        "group_name": self._group_name(event, group_id),
+                        "group_name": await self._group_name(event, group_id),
                         "member_count": await self._member_count(event, group_id),
                         "target_name": target_name,
                         "total_records": len(pending),
@@ -665,7 +751,7 @@ class WhoAtMePlugin(Star):
                 image_path = await self._render_query_image(
                     {
                         "blocks": chunk,
-                        "group_name": self._group_name(event, group_id),
+                        "group_name": await self._group_name(event, group_id),
                         "member_count": await self._member_count(event, group_id),
                         "target_name": target_name,
                         "total_records": len(records),
@@ -1048,8 +1134,10 @@ class WhoAtMePlugin(Star):
             "initial": self._initial(nickname),
             "avatar": avatar,
             "message": message,
-            "message_html": html.escape(message).replace("\n", "<br>") or "&nbsp;",
+            "has_message": bool(message.strip()),
+            "message_html": html.escape(message).replace("\n", "<br>"),
             "images": data.get("images") or data.get("image") or [],
+            "quote": self._view_quote(data.get("quote")),
             "time": data.get("time", 0),
             "time_text": self._time_text(data.get("time", 0)),
             "is_at": is_at,
@@ -1060,6 +1148,22 @@ class WhoAtMePlugin(Star):
             "tag_color": tag_color,
         }
 
+    def _view_quote(self, quote: Any) -> dict[str, Any] | None:
+        if not isinstance(quote, dict):
+            return None
+        message = str(quote.get("message") or "").strip()
+        images = [str(image) for image in (quote.get("images") or quote.get("image") or []) if image]
+        if not message and not images:
+            return None
+        nickname = str(quote.get("name") or quote.get("nickname") or quote.get("user_id") or "引用消息")
+        return {
+            "nickname": nickname,
+            "message": message,
+            "message_html": html.escape(message).replace("\n", "<br>"),
+            "images": images[:3],
+            "time_text": self._time_text(quote.get("time", 0)),
+        }
+
     def _dedupe_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: dict[tuple[Any, ...], dict[str, Any]] = {}
         for msg in messages:
@@ -1068,6 +1172,7 @@ class WhoAtMePlugin(Star):
                 msg.get("time"),
                 msg.get("message"),
                 tuple(msg.get("images") or []),
+                self._record_quote_key(msg),
             )
             if key not in seen or msg.get("is_at"):
                 seen[key] = msg
@@ -1108,12 +1213,13 @@ class WhoAtMePlugin(Star):
         event: AstrMessageEvent,
         mentions: list[str] | None = None,
         member_info: dict[str, Any] | None = None,
+        quote: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         sender_id = self._sender_id(event)
         sender = getattr(event.message_obj, "sender", None)
         member_info = member_info or {}
         role = str(member_info.get("role") or getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "member")
-        return {
+        record = {
             "user_id": sender_id,
             "message": self._message_text_for_record(event, mentions or []),
             "images": self._images(event),
@@ -1124,10 +1230,18 @@ class WhoAtMePlugin(Star):
             "time": self._timestamp(event),
             "message_id": str(getattr(event.message_obj, "message_id", "") or ""),
         }
+        if quote:
+            record["quote"] = quote
+        return record
 
-    def _context_message(self, event: AstrMessageEvent, member_info: dict[str, Any] | None = None) -> dict[str, Any]:
-        record = self._mention_record(event, member_info=member_info)
-        return {
+    def _context_message(
+        self,
+        event: AstrMessageEvent,
+        member_info: dict[str, Any] | None = None,
+        quote: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        record = self._mention_record(event, member_info=member_info, quote=quote)
+        context = {
             "user_id": record["user_id"],
             "message": record["message"],
             "images": record["images"],
@@ -1137,6 +1251,129 @@ class WhoAtMePlugin(Star):
             "level": record.get("level") or "",
             "time": record["time"],
         }
+        if record.get("quote"):
+            context["quote"] = record["quote"]
+        return context
+
+    async def _quote(self, event: AstrMessageEvent) -> dict[str, Any] | None:
+        quote = self._quote_from_event(event)
+        quote_id = str((quote or {}).get("message_id") or "")
+        if quote_id and not self._quote_has_content(quote):
+            fetched = await self._fetch_quote_message(event, quote_id)
+            if fetched:
+                merged = dict(quote or {})
+                for key, value in fetched.items():
+                    if value or key not in merged:
+                        merged[key] = value
+                return merged
+
+        if self._quote_has_content(quote):
+            return quote
+        if quote_id:
+            return {"message_id": quote_id, "message": "引用消息"}
+        return None
+
+    def _quote_from_event(self, event: AstrMessageEvent) -> dict[str, Any] | None:
+        for segment in self._raw_message_segments(event):
+            if not self._is_reference_segment(segment):
+                continue
+            quote = self._quote_from_segment(segment)
+            if quote:
+                return quote
+
+        for item in self._message_chain(event):
+            if not self._is_reference_segment(item):
+                continue
+            quote = self._quote_from_segment(item)
+            if quote:
+                return quote
+        return None
+
+    def _quote_from_segment(self, segment: Any) -> dict[str, Any] | None:
+        data = self._segment_data(segment)
+        quote = (self._quote_from_mapping(data) if data else {}) or {}
+        message_id = (
+            self._segment_value(segment, ["id", "message_id", "messageId", "msg_id", "msgId"])
+            or (data.get("id") if isinstance(data, dict) else None)
+            or (data.get("message_id") if isinstance(data, dict) else None)
+        )
+        if message_id:
+            quote["message_id"] = str(message_id)
+        return quote or None
+
+    async def _fetch_quote_message(self, event: AstrMessageEvent, message_id: str) -> dict[str, Any] | None:
+        for action in ("get_msg", "get_message"):
+            payload = await self._call_onebot_action(event, action, message_id=self._numeric_id(message_id))
+            quote = self._quote_from_mapping(payload)
+            if quote:
+                if not quote.get("message_id"):
+                    quote["message_id"] = str(message_id)
+                if self._quote_has_content(quote):
+                    return quote
+        return None
+
+    def _quote_from_mapping(self, value: Any) -> dict[str, Any] | None:
+        data = self._mapping_data(value)
+        if not data:
+            return None
+
+        message_value = self._first_mapping_value(
+            data,
+            ["message", "message_chain", "messageChain", "content", "raw_message", "rawMessage"],
+        )
+        segments = self._segments_from_value(message_value)
+        message = self._segments_text(segments, include_at=True) if segments else ""
+        images = self._segments_images(segments) if segments else []
+
+        raw_message = message_value if isinstance(message_value, str) else self._first_mapping_value(data, ["raw_message", "rawMessage"])
+        if isinstance(raw_message, str):
+            if not message:
+                message = self._strip_cq_display(raw_message)
+            images.extend(self._images_from_cq(raw_message))
+
+        if not message:
+            for key in ("text", "plain", "summary"):
+                text = data.get(key)
+                if isinstance(text, str) and text.strip():
+                    message = self._strip_cq_display(text)
+                    break
+
+        sender = self._mapping_data(data.get("sender"))
+        user_id = str(
+            self._first_mapping_value(sender, ["user_id", "userId", "id", "qq"])
+            or self._first_mapping_value(data, ["user_id", "userId", "sender_id", "senderId"])
+            or ""
+        )
+        name = str(
+            self._first_mapping_value(data, ["sender_name", "senderName", "nickname", "name"])
+            or self._first_mapping_value(sender, ["card", "nickname", "name"])
+            or user_id
+            or "引用消息"
+        )
+        quote = {
+            "message_id": str(self._first_mapping_value(data, ["message_id", "messageId", "id"]) or ""),
+            "user_id": user_id,
+            "name": name,
+            "message": message,
+            "images": self._unique_strings(images),
+            "time": self._first_mapping_value(data, ["time", "timestamp"]) or 0,
+        }
+        return quote if self._quote_has_identity(quote) else None
+
+    def _quote_has_identity(self, quote: dict[str, Any] | None) -> bool:
+        if not quote:
+            return False
+        return bool(
+            quote.get("message_id")
+            or quote.get("user_id")
+            or quote.get("message")
+            or quote.get("images")
+        )
+
+    def _quote_has_content(self, quote: dict[str, Any] | None) -> bool:
+        if not quote:
+            return False
+        return bool(str(quote.get("message") or "").strip() or quote.get("images"))
 
     def _query_target(self, event: AstrMessageEvent, text: str, mentions: list[str]) -> str:
         if "我" in text:
@@ -1165,27 +1402,10 @@ class WhoAtMePlugin(Star):
         return list(dict.fromkeys(result))
 
     def _images(self, event: AstrMessageEvent) -> list[str]:
-        urls = []
         raw_segments = self._raw_message_segments(event)
         if raw_segments:
-            for segment in raw_segments:
-                if str(segment.get("type", "")).lower() != "image":
-                    continue
-                data = segment.get("data") or {}
-                value = data.get("url") or data.get("file") or data.get("path")
-                if value:
-                    urls.append(str(value))
-            return urls
-
-        for item in self._message_chain(event):
-            if self._is_reference_segment(item):
-                continue
-            if item.__class__.__name__.lower() != "image":
-                continue
-            value = self._first_attr(item, ["url", "file", "path"])
-            if value:
-                urls.append(str(value))
-        return urls
+            return self._segments_images(raw_segments)
+        return self._segments_images(self._message_chain(event))
 
     def _append_mention(self, result: list[str], value: Any) -> None:
         if value is None:
@@ -1217,17 +1437,11 @@ class WhoAtMePlugin(Star):
     def _message_text_for_record(self, event: AstrMessageEvent, mentions: list[str]) -> str:
         raw_segments = self._raw_message_segments(event)
         if raw_segments:
-            texts = []
-            for segment in raw_segments:
-                seg_type = str(segment.get("type", "")).lower()
-                if seg_type in {"text", "plain"}:
-                    data = segment.get("data") or {}
-                    texts.append(str(data.get("text") or data.get("content") or ""))
-            text = "".join(texts).strip()
+            text = self._segments_text(raw_segments)
         else:
-            text = self._message_text(event)
+            text = self._segments_text(self._message_chain(event)) or self._message_text(event)
 
-        return self._strip_at_display(text, mentions)
+        return self._strip_at_display(self._strip_cq_display(text), mentions)
 
     def _strip_at_display(self, text: str, mentions: list[str]) -> str:
         cleaned = re.sub(r"\[CQ:at,[^\]]+\]", " ", text)
@@ -1243,11 +1457,120 @@ class WhoAtMePlugin(Star):
         return re.sub(r"\s+", " ", cleaned).strip()
 
     def _is_reference_segment(self, item: Any) -> bool:
-        cls_name = item.__class__.__name__.lower()
-        if any(token in cls_name for token in ("reply", "quote", "source", "reference")):
+        seg_type = self._segment_type(item)
+        if seg_type in REFERENCE_SEGMENT_TYPES:
             return True
-        seg_type = str(getattr(item, "type", "") or getattr(item, "seg_type", "") or "").lower()
-        return seg_type in {"reply", "quote", "source", "reference"}
+        cls_name = item.__class__.__name__.lower()
+        return any(token in cls_name for token in REFERENCE_SEGMENT_TYPES)
+
+    def _segments_from_value(self, value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = self._first_mapping_value(value, ["message", "message_chain", "messageChain", "content"])
+            if nested is not None and nested is not value:
+                return self._segments_from_value(nested)
+            if value.get("type") or value.get("seg_type"):
+                return [value]
+            return []
+        for attr in ("message", "messages", "message_chain", "messageChain", "content"):
+            nested = getattr(value, attr, None)
+            if nested is not None and nested is not value:
+                return self._segments_from_value(nested)
+        return []
+
+    def _segments_text(self, segments: list[Any], include_at: bool = False) -> str:
+        texts = []
+        for segment in segments:
+            if self._is_reference_segment(segment):
+                continue
+            seg_type = self._segment_type(segment)
+            if seg_type in {"text", "plain"}:
+                value = self._segment_value(segment, ["text", "content", "message"])
+                if value:
+                    texts.append(str(value))
+            elif include_at and seg_type == "at":
+                value = self._segment_value(segment, ["name", "display", "qq", "user_id", "target", "id"])
+                if value:
+                    texts.append(f"@{value}")
+        return "".join(texts).strip()
+
+    def _segments_images(self, segments: list[Any]) -> list[str]:
+        urls = []
+        for segment in segments:
+            if self._is_reference_segment(segment):
+                continue
+            if self._segment_type(segment) != "image":
+                continue
+            value = self._segment_value(segment, ["url", "file", "path"])
+            if value:
+                urls.append(str(value))
+        return self._unique_strings(urls)
+
+    def _segment_type(self, segment: Any) -> str:
+        if isinstance(segment, dict):
+            return str(segment.get("type") or segment.get("seg_type") or "").lower()
+        seg_type = str(getattr(segment, "type", "") or getattr(segment, "seg_type", "") or "").lower()
+        return seg_type or segment.__class__.__name__.lower()
+
+    def _segment_data(self, segment: Any) -> dict[str, Any]:
+        if isinstance(segment, dict):
+            data = segment.get("data")
+            return data if isinstance(data, dict) else segment
+        data = getattr(segment, "data", None)
+        return data if isinstance(data, dict) else {}
+
+    def _segment_value(self, segment: Any, names: list[str]) -> Any:
+        data = self._segment_data(segment)
+        if data:
+            value = self._first_mapping_value(data, names)
+            if value is not None:
+                return value
+        if isinstance(segment, dict):
+            return self._first_mapping_value(segment, names)
+        return self._first_attr(segment, names)
+
+    def _strip_cq_display(self, text: str) -> str:
+        cleaned = re.sub(r"\[CQ:reply,[^\]]+\]", " ", text)
+        cleaned = re.sub(r"\[CQ:image,[^\]]+\]", " ", cleaned)
+        cleaned = re.sub(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]", r"@\1", cleaned)
+        cleaned = re.sub(r"\[CQ:[^\]]+\]", " ", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    def _images_from_cq(self, text: str) -> list[str]:
+        images = []
+        for attrs in re.findall(r"\[CQ:image,([^\]]+)\]", text):
+            data = self._parse_cq_attrs(attrs)
+            value = data.get("url") or data.get("file") or data.get("path")
+            if value:
+                images.append(value)
+        return self._unique_strings(images)
+
+    def _parse_cq_attrs(self, attrs: str) -> dict[str, str]:
+        result = {}
+        for part in attrs.split(","):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            result[key.strip()] = value.strip()
+        return result
+
+    def _first_mapping_value(self, data: dict[str, Any], names: list[str]) -> Any:
+        for name in names:
+            value = data.get(name)
+            if value is not None and value != "":
+                return value
+        return None
+
+    def _unique_strings(self, values: list[Any]) -> list[str]:
+        result = []
+        for value in values:
+            if not value:
+                continue
+            text = str(value)
+            if text not in result:
+                result.append(text)
+        return result
 
     def _normalize_command_text(self, text: str) -> str:
         normalized = text.strip()
@@ -1295,16 +1618,37 @@ class WhoAtMePlugin(Star):
             return self._sender_name(event)
         return "全体成员" if target == ALL_TARGET else str(target)
 
-    def _group_name(self, event: AstrMessageEvent, group_id: str) -> str:
+    async def _group_name(self, event: AstrMessageEvent, group_id: str) -> str:
         group = getattr(event.message_obj, "group", None)
         if group and getattr(group, "group_name", None):
-            return str(group.group_name)
+            name = str(group.group_name)
+            if self._is_valid_group_name(name, group_id):
+                return name
         raw = getattr(event.message_obj, "raw_message", None)
         if isinstance(raw, dict):
-            for key in ("group_name", "groupName"):
-                if raw.get(key):
-                    return str(raw[key])
+            for key in ("group_name", "groupName", "name"):
+                name = raw.get(key)
+                if self._is_valid_group_name(name, group_id):
+                    return str(name)
+
+        group_info = await self._call_onebot_action(
+            event,
+            "get_group_info",
+            group_id=self._numeric_id(group_id),
+            no_cache=True,
+        )
+        group_info = self._mapping_data(group_info)
+        for key in ("group_name", "groupName", "name"):
+            name = group_info.get(key)
+            if self._is_valid_group_name(name, group_id):
+                return str(name)
         return str(group_id)
+
+    def _is_valid_group_name(self, value: Any, group_id: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        return text.lower() not in {"n/a", "na", "none", "null", "undefined", "unknown", str(group_id).lower()}
 
     async def _member_count(self, event: AstrMessageEvent, group_id: str) -> int:
         group = getattr(event.message_obj, "group", None)
@@ -1327,6 +1671,7 @@ class WhoAtMePlugin(Star):
             group_id=self._numeric_id(group_id),
             no_cache=True,
         )
+        group_info = self._mapping_data(group_info)
         if isinstance(group_info, dict):
             for key in ("member_count", "member_num", "group_member_count"):
                 value = group_info.get(key)
@@ -1559,6 +1904,8 @@ class WhoAtMePlugin(Star):
             return False
         if self._record_images_key(left) != self._record_images_key(right):
             return False
+        if self._record_quote_key(left) != self._record_quote_key(right):
+            return False
 
         return abs(self._record_time(left) - self._record_time(right)) <= window_seconds
 
@@ -1570,6 +1917,17 @@ class WhoAtMePlugin(Star):
 
     def _record_images_key(self, record: dict[str, Any]) -> tuple[str, ...]:
         return tuple(str(image) for image in (record.get("images") or record.get("image") or []))
+
+    def _record_quote_key(self, record: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+        quote = record.get("quote")
+        if not isinstance(quote, dict):
+            return ("", "", ())
+        images = tuple(str(image) for image in (quote.get("images") or quote.get("image") or []))
+        return (
+            str(quote.get("message_id") or ""),
+            self._normalize_record_text(quote.get("message")),
+            images,
+        )
 
     def _record_time(self, record: dict[str, Any]) -> int:
         try:
