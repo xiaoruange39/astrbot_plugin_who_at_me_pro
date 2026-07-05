@@ -239,6 +239,18 @@ HTML_TEMPLATE = r"""
       white-space: nowrap;
       text-overflow: ellipsis;
     }
+    .member-title {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 4px;
+      padding: 2px 5px;
+      background: #e1e1e1;
+      color: #777;
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 700;
+    }
     .quote-time {
       color: #999;
       font-weight: 600;
@@ -327,6 +339,7 @@ HTML_TEMPLATE = r"""
                   <div class="msg-info">
                     <span class="tag-pill" style="background: {{ msg.tag_color }}">{% if msg.level %}LV{{ msg.level }} {% endif %}{{ msg.role_text }}</span>
                     <span class="nickname">{{ msg.nickname }}</span>
+                    {% if msg.member_title %}<span class="member-title">{{ msg.member_title }}</span>{% endif %}
                   </div>
                   <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
                     {% if msg.quote %}
@@ -396,9 +409,16 @@ class WhoAtMePlugin(Star):
             return
 
         text = self._normalize_command_text(self._message_text(event))
+        is_plugin_command = self._is_plugin_command(text)
+        if not self._global_group_allowed(event):
+            if is_plugin_command:
+                self._stop_event(event)
+                self._disable_llm(event)
+            return
+
         mentions = self._mentions(event)
         sender_id = self._sender_id(event)
-        if self._is_plugin_command(text):
+        if is_plugin_command:
             self._stop_event(event)
             self._disable_llm(event)
             if sender_id:
@@ -927,7 +947,7 @@ class WhoAtMePlugin(Star):
         info = self._member_info_from_event(event) if user_id == self._sender_id(event) else {}
         if not user_id:
             return info
-        if info.get("level") and (info.get("title") or info.get("role")):
+        if info.get("level") and info.get("role") and (info.get("title") or info.get("member_title")):
             return info
 
         api_info = await self._call_onebot_action(
@@ -963,6 +983,24 @@ class WhoAtMePlugin(Star):
             {
                 "role": pick(["role"]),
                 "title": pick(["title", "special_title", "specialTitle"]),
+                "member_title": pick(
+                    [
+                        "member_title",
+                        "memberTitle",
+                        "group_title",
+                        "groupTitle",
+                        "level_title",
+                        "levelTitle",
+                        "rank_title",
+                        "rankTitle",
+                        "title_name",
+                        "titleName",
+                        "badge",
+                        "nameplate",
+                        "honor_title",
+                        "honorTitle",
+                    ]
+                ),
                 "level": pick(["level", "member_level", "qq_level", "qqLevel"]),
                 "card": pick(["card"]),
                 "nickname": pick(["nickname", "name"]),
@@ -976,6 +1014,24 @@ class WhoAtMePlugin(Star):
         title = data.get("title") or data.get("special_title") or data.get("specialTitle")
         if title:
             info["title"] = str(title)
+        member_title = (
+            data.get("member_title")
+            or data.get("memberTitle")
+            or data.get("group_title")
+            or data.get("groupTitle")
+            or data.get("level_title")
+            or data.get("levelTitle")
+            or data.get("rank_title")
+            or data.get("rankTitle")
+            or data.get("title_name")
+            or data.get("titleName")
+            or data.get("badge")
+            or data.get("nameplate")
+            or data.get("honor_title")
+            or data.get("honorTitle")
+        )
+        if member_title:
+            info["member_title"] = str(member_title)
         level = data.get("level") or data.get("member_level") or data.get("qq_level") or data.get("qqLevel")
         if level:
             info["level"] = self._level_text(level)
@@ -1039,12 +1095,15 @@ class WhoAtMePlugin(Star):
         context_status = "开启" if context_config.get("enabled") else "关闭"
         pending_count = len(await self._get_pending_reminders(group_id, sender_id)) if sender_id else 0
         current_umo = self._event_umo(event)
+        global_umos = self._global_enabled_group_umos()
         enabled_umos = self._reminder_enabled_group_umos()
+        global_status = "未配置名单" if not global_umos else ("已命中" if current_umo in global_umos else "未命中")
         umo_status = "未配置名单" if not enabled_umos else ("已命中" if current_umo in enabled_umos else "未命中")
         return (
             "艾特提醒状态：\n"
             f"本群提醒：{group_status}\n"
             f"当前 UMO：{current_umo or '未知'}\n"
+            f"全局白名单：{global_status}\n"
             f"UMO 名单：{umo_status}\n"
             f"你的提醒：{user_status}\n"
             f"提醒上下文：{context_status}（前 {context_config.get('before', 0)} / 后 {context_config.get('after', 0)}）\n"
@@ -1116,6 +1175,7 @@ class WhoAtMePlugin(Star):
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
+        member_title = str(data.get("member_title") or title or "")
         user_id = str(data.get("user_id") or data.get("User") or "")
         level = self._level_text(data.get("level"))
         tag_color = "#b4b4b6"
@@ -1123,14 +1183,11 @@ class WhoAtMePlugin(Star):
             tag_color = "#f6c751"
         elif role in {"admin", "administrator"}:
             tag_color = "#57d6c5"
-        if title:
-            role_text = title
-            if role not in {"owner", "admin", "administrator"}:
-                tag_color = "#c99af8"
         avatar = f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=100" if user_id.isdigit() else ""
         return {
             "user_id": user_id,
             "nickname": nickname,
+            "member_title": member_title,
             "initial": self._initial(nickname),
             "avatar": avatar,
             "message": message,
@@ -1226,6 +1283,7 @@ class WhoAtMePlugin(Star):
             "name": member_info.get("card") or member_info.get("nickname") or self._sender_name(event),
             "role": role,
             "title": member_info.get("title") or "",
+            "member_title": member_info.get("member_title") or "",
             "level": member_info.get("level") or "",
             "time": self._timestamp(event),
             "message_id": str(getattr(event.message_obj, "message_id", "") or ""),
@@ -1248,6 +1306,7 @@ class WhoAtMePlugin(Star):
             "name": record["name"],
             "role": record["role"],
             "title": record.get("title") or "",
+            "member_title": record.get("member_title") or "",
             "level": record.get("level") or "",
             "time": record["time"],
         }
@@ -2011,6 +2070,13 @@ class WhoAtMePlugin(Star):
 
     def _max_reminder_context(self) -> int:
         return max(0, self._config_int("reminder", "max_context_messages", default=MAX_REMINDER_CONTEXT))
+
+    def _global_group_allowed(self, event: AstrMessageEvent) -> bool:
+        enabled_umos = self._global_enabled_group_umos()
+        return not enabled_umos or self._event_umo(event) in enabled_umos
+
+    def _global_enabled_group_umos(self) -> set[str]:
+        return set(self._config_list("global", "enabled_group_umos"))
 
     def _reminder_enabled_group_umos(self) -> set[str]:
         return set(self._config_list("reminder", "enabled_group_umos"))

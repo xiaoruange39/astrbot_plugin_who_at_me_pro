@@ -1,4 +1,16 @@
 {
+  "global": {
+    "description": "全局使用配置",
+    "type": "object",
+    "items": {
+      "enabled_group_umos": {
+        "description": "允许使用插件的群 UMO 白名单",
+        "type": "list",
+        "default": [],
+        "hint": "留空则所有群都可使用本插件；填入后只有这些 UMO 的群会记录、查询、清理和触发提醒。非白名单入口会静默忽略插件命令并阻止 LLM 接管。"
+      }
+    }
+  },
   "record": {
     "description": "记录查询配置",
     "type": "object",
