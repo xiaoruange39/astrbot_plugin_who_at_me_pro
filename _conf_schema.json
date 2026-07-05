@@ -30,8 +30,8 @@
       "default_group_enabled": {
         "description": "新群默认开启被动艾特提醒",
         "type": "bool",
-        "default": false,
-        "hint": "关闭时仍可用 #开启本群艾特提醒 单独开启。"
+        "default": true,
+        "hint": "关闭后不会生成回群提醒；仍可用 #开启本群艾特提醒 单独开启。"
       },
       "default_user_enabled": {
         "description": "用户默认接收艾特提醒",

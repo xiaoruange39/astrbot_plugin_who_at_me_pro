@@ -300,6 +300,7 @@ class WhoAtMePlugin(Star):
         self.after_tasks: dict[str, list[dict[str, Any]]] = {}
         self.reminder_after_tasks: dict[str, list[dict[str, Any]]] = {}
         self.bot_name_cache: dict[str, str] = {}
+        self.started_at = int(time.time())
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
     async def on_group_message(self, event: AstrMessageEvent):
@@ -310,18 +311,19 @@ class WhoAtMePlugin(Star):
 
         text = self._normalize_command_text(self._message_text(event))
         mentions = self._mentions(event)
+        sender_id = self._sender_id(event)
         if self._is_plugin_command(text):
             self._stop_event(event)
             self._disable_llm(event)
+            if sender_id:
+                await self._deliver_pending_reminders(event, group_id, sender_id)
             command_result = await self._handle_command(event, group_id, text, mentions)
-            sender_id = self._sender_id(event)
             if sender_id:
                 await self._update_last_active(group_id, sender_id, self._timestamp(event))
             for result in command_result or []:
                 yield result
             return
 
-        sender_id = self._sender_id(event)
         if sender_id:
             await self._deliver_pending_reminders(event, group_id, sender_id)
         await self._record_mentions(event, group_id, mentions)
@@ -540,13 +542,14 @@ class WhoAtMePlugin(Star):
         if not await self._reminder_user_enabled(group_id, target):
             return False
 
+        record_time = int(record.get("time", time.time()))
         last_active = await self.get_kv_data(self._reminder_last_active_key(group_id, target), None)
         try:
             last_active_time = int(last_active)
         except (TypeError, ValueError):
-            return False
+            last_active_time = self.started_at
 
-        if int(record.get("time", time.time())) - last_active_time < self._reminder_away_seconds():
+        if record_time - min(last_active_time, record_time) < self._reminder_away_seconds():
             return False
 
         pending_record = dict(record)
@@ -803,7 +806,7 @@ class WhoAtMePlugin(Star):
 
     async def _reminder_group_enabled(self, group_id: str) -> bool:
         value = await self.get_kv_data(self._reminder_group_key(group_id), None)
-        return self._config_bool("reminder", "default_group_enabled", default=False) if value is None else bool(value)
+        return self._config_bool("reminder", "default_group_enabled", default=True) if value is None else bool(value)
 
     async def _set_reminder_group_enabled(self, group_id: str, enabled: bool) -> None:
         await self.put_kv_data(self._reminder_group_key(group_id), bool(enabled))
@@ -849,12 +852,14 @@ class WhoAtMePlugin(Star):
         group_status = "开启" if await self._reminder_group_enabled(group_id) else "关闭"
         user_status = "开启" if await self._reminder_user_enabled(group_id, sender_id) else "关闭"
         context_status = "开启" if context_config.get("enabled") else "关闭"
+        pending_count = len(await self._get_pending_reminders(group_id, sender_id)) if sender_id else 0
         return (
             "艾特提醒状态：\n"
             f"本群提醒：{group_status}\n"
             f"你的提醒：{user_status}\n"
             f"提醒上下文：{context_status}（前 {context_config.get('before', 0)} / 后 {context_config.get('after', 0)}）\n"
-            f"离开判定：{self._reminder_away_seconds() // 60} 分钟未发言"
+            f"离开判定：{self._reminder_away_seconds() // 60} 分钟未发言\n"
+            f"待提醒记录：{pending_count} 条"
         )
 
     async def _context_enabled(self, group_id: str) -> bool:
