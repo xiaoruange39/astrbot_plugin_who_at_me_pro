@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import html
+import json
 import re
 import tempfile
 import time
@@ -46,6 +47,13 @@ MAX_REMINDER_CONTEXT = 5
 HEADER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e60edc1d6508f56becb8fa.png"
 FOOTER_IMAGE_URL = "https://pic1.imgdb.cn/item/69e5f9e51d6508f56bec8ea5.png"
 REFERENCE_SEGMENT_TYPES = {"reply", "quote", "source", "reference"}
+PAGE_SETTINGS_DEFAULTS = {
+    "time_x": 30,
+    "time_y": 7,
+    "group_x": 56,
+    "group_y": 45,
+    "font_path": "",
+}
 
 
 HTML_TEMPLATE = r"""
@@ -54,11 +62,12 @@ HTML_TEMPLATE = r"""
 <head>
   <meta charset="utf-8" />
   <style>
+    {{ custom_font_css | safe }}
     html, body {
       margin: 0;
       padding: 0;
       background: #333;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-family: var(--who-at-me-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
     }
     .app {
       width: 600px;
@@ -82,17 +91,17 @@ HTML_TEMPLATE = r"""
     }
     .status-time {
       position: absolute;
-      top: 7px;
-      left: 30px;
+      top: {{ layout.time_y }}px;
+      left: {{ layout.time_x }}px;
       font-size: 16px;
       font-weight: 700;
       color: #111;
     }
     .header-text {
       position: absolute;
-      left: 56px;
+      left: {{ layout.group_x }}px;
       right: 56px;
-      top: 45px;
+      top: {{ layout.group_y }}px;
       display: flex;
       align-items: center;
       min-width: 0;
@@ -395,11 +404,59 @@ class WhoAtMePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = config or {}
+        self._jsonify = None
+        self._register_page_apis(context)
         self.before_cache: dict[str, list[dict[str, Any]]] = {}
         self.after_tasks: dict[str, list[dict[str, Any]]] = {}
         self.reminder_after_tasks: dict[str, list[dict[str, Any]]] = {}
         self.bot_name_cache: dict[str, str] = {}
+        self.page_settings = self._load_page_settings()
+        self._font_css_cache_key: tuple[str, int, int] | None = None
+        self._font_css_cache_value = ""
         self.started_at = int(time.time())
+
+    def _register_page_apis(self, context: Context) -> None:
+        try:
+            from quart import jsonify
+
+            self._jsonify = jsonify
+            for prefix in ("astrbot_plugin_who_at_me_pro", "astrbot_plugin_who_at_me"):
+                context.register_web_api(
+                    f"/{prefix}/layout",
+                    self.page_layout,
+                    ["GET", "POST"],
+                    "谁艾特我Pro渲染布局设置",
+                )
+                context.register_web_api(
+                    f"/{prefix}/fonts",
+                    self.page_fonts,
+                    ["GET"],
+                    "谁艾特我Pro字体列表",
+                )
+                context.register_web_api(
+                    f"/{prefix}/fonts/upload",
+                    self.page_font_upload,
+                    ["POST"],
+                    "谁艾特我Pro上传字体",
+                )
+                context.register_web_api(
+                    f"/{prefix}/fonts/select",
+                    self.page_font_select,
+                    ["POST"],
+                    "谁艾特我Pro选择字体",
+                )
+                context.register_web_api(
+                    f"/{prefix}/fonts/delete",
+                    self.page_font_delete,
+                    ["POST"],
+                    "谁艾特我Pro删除字体",
+                )
+        except Exception as exc:
+            logger.warning(f"[谁艾特我] 注册 Page API 失败: {exc}")
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=10000)
+    async def mark_group_activity_early(self, event: AstrMessageEvent):
+        await self._mark_group_activity(event)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
     async def on_group_message(self, event: AstrMessageEvent):
@@ -427,10 +484,9 @@ class WhoAtMePlugin(Star):
             self._stop_event(event)
             self._disable_llm(event)
             if sender_id:
-                await self._deliver_pending_reminders(event, group_id, sender_id)
-            command_result = await self._handle_command(event, group_id, text, mentions)
-            if sender_id:
+                await self.delete_kv_data(self._reminder_pending_key(group_id, sender_id))
                 await self._update_last_active(group_id, sender_id, self._timestamp(event))
+            command_result = await self._handle_command(event, group_id, text, mentions)
             for result in command_result or []:
                 yield result
             return
@@ -440,6 +496,158 @@ class WhoAtMePlugin(Star):
         await self._record_mentions(event, group_id, mentions)
         if sender_id:
             await self._update_last_active(group_id, sender_id, self._timestamp(event))
+
+    async def _mark_group_activity(self, event: AstrMessageEvent) -> None:
+        group_id = self._group_id(event)
+        if not group_id or not self._global_group_allowed(event):
+            return
+
+        sender_id = self._sender_id(event)
+        if not sender_id:
+            return
+
+        self_id = self._self_id(event)
+        if self_id and sender_id == self_id:
+            await self.delete_kv_data(self._reminder_pending_key(group_id, self_id))
+            return
+
+        text = self._normalize_command_text(self._message_text(event))
+        if self._is_plugin_command(text):
+            await self.delete_kv_data(self._reminder_pending_key(group_id, sender_id))
+            await self._update_last_active(group_id, sender_id, self._timestamp(event))
+            return
+
+        await self._deliver_pending_reminders(event, group_id, sender_id)
+        await self._update_last_active(group_id, sender_id, self._timestamp(event))
+
+    async def page_layout(self):
+        try:
+            from quart import request
+
+            if request.method == "POST":
+                if not self._is_same_origin_request(request):
+                    return self._json_response({"status": "error", "message": "请求来源无效"})
+                payload = await request.get_json(silent=True)
+                if not isinstance(payload, dict):
+                    payload = {}
+                layout = payload.get("layout") if isinstance(payload.get("layout"), dict) else payload
+                self.page_settings.update(self._sanitize_layout_settings(layout))
+                self._save_page_settings()
+                return self._json_response({"status": "ok", "message": "布局已保存", "data": self._page_data()})
+
+            return self._json_response({"status": "ok", "data": self._page_data()})
+        except Exception as exc:
+            logger.error(f"[谁艾特我] Page布局接口失败: {exc}", exc_info=True)
+            return self._json_response({"status": "error", "message": "布局接口失败"})
+
+    async def page_fonts(self):
+        try:
+            return self._json_response({"status": "ok", "data": self._font_data()})
+        except Exception as exc:
+            logger.error(f"[谁艾特我] Page字体列表失败: {exc}", exc_info=True)
+            return self._json_response({"status": "error", "message": "获取字体列表失败"})
+
+    async def page_font_upload(self):
+        try:
+            from quart import request
+
+            if not self._is_same_origin_request(request):
+                return self._json_response({"status": "error", "message": "请求来源无效"})
+
+            filename = ""
+            data = None
+            files = await request.files
+            file = files.get("font") if files else None
+            if file and getattr(file, "filename", ""):
+                filename = str(file.filename)
+                data = file.read()
+                if hasattr(data, "__await__"):
+                    data = await data
+            else:
+                payload = await request.get_json(silent=True)
+                if isinstance(payload, dict):
+                    filename = str(payload.get("filename") or "")
+                    content = str(payload.get("content") or "")
+                    if "," in content:
+                        content = content.split(",", 1)[1]
+                    try:
+                        data = base64.b64decode(content, validate=True)
+                    except Exception:
+                        return self._json_response({"status": "error", "message": "字体文件内容无效"})
+
+            if not filename:
+                return self._json_response({"status": "error", "message": "请选择字体文件"})
+            if not self._is_allowed_font_file(filename):
+                return self._json_response({"status": "error", "message": "仅支持 .ttf/.otf/.woff/.woff2/.ttc 字体文件"})
+            if not data:
+                return self._json_response({"status": "error", "message": "字体文件为空"})
+            if len(data) > 50 * 1024 * 1024:
+                return self._json_response({"status": "error", "message": "字体文件不能超过50MB"})
+
+            fonts_dir = self._fonts_dir()
+            fonts_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = self._sanitize_font_filename(filename)
+            target = fonts_dir / safe_name
+            if target.exists():
+                target = fonts_dir / f"{target.stem}_{uuid.uuid4().hex[:8]}{target.suffix}"
+            target.write_bytes(data)
+
+            self._save_font_path(self._font_config_path(target.name))
+            logger.info(f"[谁艾特我] Page上传并启用自定义字体: {target.name}")
+            return self._json_response({"status": "ok", "message": "字体已上传并启用", "data": self._font_data()})
+        except Exception as exc:
+            logger.error(f"[谁艾特我] Page上传字体失败: {exc}", exc_info=True)
+            return self._json_response({"status": "error", "message": "上传字体失败"})
+
+    async def page_font_select(self):
+        try:
+            from quart import request
+
+            if not self._is_same_origin_request(request):
+                return self._json_response({"status": "error", "message": "请求来源无效"})
+
+            payload = await request.get_json(silent=True)
+            font_path = str((payload.get("font_path") or "") if isinstance(payload, dict) else "").strip()
+            if font_path:
+                font_name = self._sanitize_font_filename(self._selected_font_name(font_path))
+                if not font_name or not self._is_allowed_font_file(font_name):
+                    return self._json_response({"status": "error", "message": "字体文件类型不支持"})
+                target = self._fonts_dir() / font_name
+                if not target.exists() or not target.is_file():
+                    return self._json_response({"status": "error", "message": "字体文件不存在"})
+                font_path = self._font_config_path(font_name)
+
+            self._save_font_path(font_path)
+            logger.info(f"[谁艾特我] Page切换自定义字体: {font_path or '默认字体'}")
+            return self._json_response({"status": "ok", "message": "字体设置已保存", "data": self._font_data()})
+        except Exception as exc:
+            logger.error(f"[谁艾特我] Page选择字体失败: {exc}", exc_info=True)
+            return self._json_response({"status": "error", "message": "保存字体设置失败"})
+
+    async def page_font_delete(self):
+        try:
+            from quart import request
+
+            if not self._is_same_origin_request(request):
+                return self._json_response({"status": "error", "message": "请求来源无效"})
+
+            payload = await request.get_json(silent=True)
+            font_path = str((payload.get("font_path") or "") if isinstance(payload, dict) else "").strip()
+            font_name = self._sanitize_font_filename(self._selected_font_name(font_path))
+            if not font_name or not self._is_allowed_font_file(font_name):
+                return self._json_response({"status": "error", "message": "字体文件参数无效"})
+            target = self._fonts_dir() / font_name
+            if not target.exists() or not target.is_file():
+                return self._json_response({"status": "error", "message": "字体文件不存在"})
+
+            target.unlink()
+            if self._selected_font_name(self.page_settings.get("font_path", "")) == font_name:
+                self._save_font_path("")
+            logger.info(f"[谁艾特我] Page删除自定义字体: {font_name}")
+            return self._json_response({"status": "ok", "message": "字体已删除", "data": self._font_data()})
+        except Exception as exc:
+            logger.error(f"[谁艾特我] Page删除字体失败: {exc}", exc_info=True)
+            return self._json_response({"status": "error", "message": "删除字体失败"})
 
     async def _handle_command(
         self,
@@ -850,6 +1058,9 @@ class WhoAtMePlugin(Star):
         return event.plain_result("已成功清除全部艾特数据")
 
     async def _render_query_image(self, data: dict[str, Any]) -> str:
+        data = dict(data)
+        data.setdefault("layout", self._render_layout())
+        data.setdefault("custom_font_css", self._custom_font_css())
         timeout = self._render_task_timeout_sec()
         if self._config_bool("render", "prefer_browser", default=True):
             try:
@@ -2248,6 +2459,218 @@ class WhoAtMePlugin(Star):
             parts = re.split(r"[\n,，]+", value)
             return [part.strip() for part in parts if part.strip()]
         return []
+
+    def _json_response(self, payload: dict[str, Any]) -> Any:
+        return self._jsonify(payload) if callable(self._jsonify) else payload
+
+    def _page_data(self) -> dict[str, Any]:
+        data = self._font_data()
+        data["layout"] = self._render_layout()
+        return data
+
+    def _font_data(self) -> dict[str, Any]:
+        current_path = str(self.page_settings.get("font_path") or "")
+        current_name = self._selected_font_name(current_path)
+        return {
+            "fonts": self._list_uploaded_fonts(),
+            "current_path": current_path,
+            "current_name": current_name,
+        }
+
+    def _plugin_data_dir(self) -> Path:
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me"
+        except Exception:
+            return Path(tempfile.gettempdir()) / "astrbot_plugin_who_at_me"
+
+    def _page_settings_file(self) -> Path:
+        return self._plugin_data_dir() / "page_settings.json"
+
+    def _fonts_dir(self) -> Path:
+        return self._plugin_data_dir() / "resources" / "fonts"
+
+    def _load_page_settings(self) -> dict[str, Any]:
+        settings = dict(PAGE_SETTINGS_DEFAULTS)
+        path = self._page_settings_file()
+        try:
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    settings.update(raw)
+        except Exception as exc:
+            logger.warning(f"[谁艾特我] 读取 Page 设置失败，使用默认值: {exc}")
+        settings.update(self._sanitize_layout_settings(settings))
+        settings["font_path"] = str(settings.get("font_path") or "").strip()
+        return settings
+
+    def _save_page_settings(self) -> None:
+        path = self._page_settings_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(self.page_settings, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _sanitize_layout_settings(self, value: Any) -> dict[str, int]:
+        data = value if isinstance(value, dict) else {}
+        return {
+            "time_x": self._clamp_int(data.get("time_x"), PAGE_SETTINGS_DEFAULTS["time_x"], 0, 600),
+            "time_y": self._clamp_int(data.get("time_y"), PAGE_SETTINGS_DEFAULTS["time_y"], 0, 120),
+            "group_x": self._clamp_int(data.get("group_x"), PAGE_SETTINGS_DEFAULTS["group_x"], 0, 600),
+            "group_y": self._clamp_int(data.get("group_y"), PAGE_SETTINGS_DEFAULTS["group_y"], 0, 120),
+        }
+
+    def _render_layout(self) -> dict[str, int]:
+        return self._sanitize_layout_settings(self.page_settings)
+
+    def _clamp_int(self, value: Any, default: int, minimum: int, maximum: int) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = int(default)
+        return min(maximum, max(minimum, number))
+
+    def _is_same_origin_request(self, request: Any) -> bool:
+        host = request.headers.get("Host", "") if request else ""
+        origin = request.headers.get("Origin", "") if request else ""
+        referer = request.headers.get("Referer", "") if request else ""
+        sec_fetch_site = request.headers.get("Sec-Fetch-Site", "") if request else ""
+        if sec_fetch_site and sec_fetch_site not in {"same-origin", "same-site", "none"}:
+            return False
+        if origin:
+            return bool(host and origin.split("://", 1)[-1].split("/", 1)[0] == host)
+        if referer:
+            return bool(host and referer.split("://", 1)[-1].split("/", 1)[0] == host)
+        return not sec_fetch_site or sec_fetch_site == "none"
+
+    def _sanitize_font_filename(self, filename: str) -> str:
+        name = Path(str(filename or "")).name.strip()
+        stem = Path(name).stem
+        suffix = Path(name).suffix.lower()
+        safe_stem = re.sub(r"[^0-9A-Za-z._\-一-鿿]+", "_", stem).strip("._-")
+        if not safe_stem:
+            safe_stem = "font"
+        return f"{safe_stem[:80]}{suffix}"
+
+    def _is_allowed_font_file(self, filename: str) -> bool:
+        return Path(str(filename or "")).suffix.lower() in {".ttf", ".otf", ".woff", ".woff2", ".ttc"}
+
+    def _format_file_size(self, size: int) -> str:
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f}KB"
+        return f"{size / 1024 / 1024:.1f}MB"
+
+    def _font_config_path(self, filename: str) -> str:
+        return f"resources/fonts/{filename}"
+
+    def _selected_font_name(self, font_path: str) -> str:
+        text = str(font_path or "").replace("\\", "/").strip()
+        return Path(text).name if text else ""
+
+    def _list_uploaded_fonts(self) -> list[dict[str, Any]]:
+        current_font = self._selected_font_name(str(self.page_settings.get("font_path") or ""))
+        fonts: list[dict[str, Any]] = []
+        fonts_dir = self._fonts_dir()
+        if not fonts_dir.exists():
+            return fonts
+        for font_file in sorted(fonts_dir.iterdir(), key=lambda item: item.name.lower()):
+            if not font_file.is_file() or not self._is_allowed_font_file(font_file.name):
+                continue
+            stat = font_file.stat()
+            fonts.append(
+                {
+                    "name": font_file.name,
+                    "path": self._font_config_path(font_file.name),
+                    "size": stat.st_size,
+                    "size_text": self._format_file_size(stat.st_size),
+                    "is_current": font_file.name == current_font,
+                }
+            )
+        return fonts
+
+    def _save_font_path(self, font_path: str) -> None:
+        font_path = str(font_path or "").strip()
+        if font_path:
+            font_name = self._sanitize_font_filename(self._selected_font_name(font_path))
+            font_path = self._font_config_path(font_name) if font_name else ""
+        self.page_settings["font_path"] = font_path
+        self._font_css_cache_key = None
+        self._font_css_cache_value = ""
+        self._save_page_settings()
+
+    def _resolve_custom_font_path(self) -> Path | None:
+        font_path = str(self.page_settings.get("font_path") or "").strip()
+        if not font_path:
+            return None
+        raw_path = Path(font_path).expanduser()
+        candidates = [raw_path] if raw_path.is_absolute() else [
+            self._plugin_data_dir() / raw_path,
+            self._fonts_dir() / raw_path.name,
+            Path(__file__).resolve().parent / raw_path,
+            Path(__file__).resolve().parent / "fonts" / raw_path.name,
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    return candidate.resolve()
+            except OSError:
+                continue
+        logger.warning(f"[谁艾特我] 自定义字体文件不存在，使用默认字体: {font_path}")
+        return None
+
+    def _font_format(self, font_path: Path) -> str:
+        suffix = font_path.suffix.lower()
+        if suffix == ".otf":
+            return "opentype"
+        if suffix == ".woff":
+            return "woff"
+        if suffix == ".woff2":
+            return "woff2"
+        return "truetype"
+
+    def _font_mime_type(self, font_path: Path) -> str:
+        suffix = font_path.suffix.lower()
+        if suffix == ".otf":
+            return "font/otf"
+        if suffix == ".woff":
+            return "font/woff"
+        if suffix == ".woff2":
+            return "font/woff2"
+        return "font/ttf"
+
+    def _custom_font_css(self) -> str:
+        font_path = self._resolve_custom_font_path()
+        if not font_path:
+            self._font_css_cache_key = None
+            self._font_css_cache_value = ""
+            return ""
+
+        try:
+            stat = font_path.stat()
+            cache_key = (str(font_path), stat.st_mtime_ns, stat.st_size)
+            if cache_key == self._font_css_cache_key:
+                return self._font_css_cache_value
+            font_data = base64.b64encode(font_path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            logger.warning(f"[谁艾特我] 读取自定义字体失败，使用默认字体: {exc}")
+            self._font_css_cache_key = None
+            self._font_css_cache_value = ""
+            return ""
+
+        css = (
+            "@font-face { "
+            "font-family: 'WhoAtMeCustomFont'; "
+            f"src: url(\"data:{self._font_mime_type(font_path)};base64,{font_data}\") format('{self._font_format(font_path)}'); "
+            "font-weight: 100 900; font-style: normal; font-display: block; "
+            "}\n"
+            ":root { --who-at-me-font-family: 'WhoAtMeCustomFont', 'Microsoft YaHei', 'Segoe UI', sans-serif; }\n"
+            "body, body * { font-family: var(--who-at-me-font-family) !important; }"
+        )
+        self._font_css_cache_key = cache_key
+        self._font_css_cache_value = css
+        return css
 
     def _format_template(self, template: str, **kwargs: Any) -> str:
         try:

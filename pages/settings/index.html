@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>谁艾特我Pro设置</title>
+<style>
+:root {
+  --bg:#f3f5f8;
+  --panel:#fff;
+  --panel2:#f8fafc;
+  --text:#172033;
+  --muted:#667085;
+  --line:#dbe3ec;
+  --blue:#1e7bff;
+  --blue2:#eaf2ff;
+  --red:#e5484d;
+  --shadow:0 10px 28px rgba(17,24,39,.08);
+}
+* { box-sizing:border-box }
+body {
+  margin:0;
+  min-height:100vh;
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+}
+.wrap { max-width:1180px; margin:0 auto; padding:28px 24px 40px }
+.head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:18px }
+h1 { margin:0; font-size:26px; line-height:1.2 }
+.sub { margin-top:6px; color:var(--muted); font-size:13px }
+.grid { display:grid; grid-template-columns:minmax(360px,430px) 1fr; gap:18px; align-items:start }
+.card {
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:8px;
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+.card h2 {
+  margin:0;
+  padding:16px 18px;
+  border-bottom:1px solid var(--line);
+  font-size:17px;
+}
+.section { padding:18px }
+.row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px }
+label { display:block; font-size:12px; font-weight:700; color:var(--muted); margin-bottom:6px }
+input[type=number] {
+  width:100%;
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:10px 11px;
+  font-size:15px;
+  outline:none;
+  background:#fff;
+  color:var(--text);
+}
+input[type=number]:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(30,123,255,.12) }
+.actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:4px }
+button {
+  border:0;
+  border-radius:8px;
+  padding:10px 14px;
+  font-size:14px;
+  font-weight:750;
+  cursor:pointer;
+  color:var(--blue);
+  background:var(--blue2);
+}
+button.primary { color:#fff; background:var(--blue) }
+button.danger { color:var(--red); background:#fff1f1 }
+button:disabled { opacity:.55; cursor:not-allowed }
+.msg { min-height:22px; margin-top:12px; color:var(--muted); font-size:13px }
+.preview-wrap { padding:18px; overflow:auto }
+.phone {
+  width:600px;
+  min-height:190px;
+  background:#f2f3f5;
+  position:relative;
+  border-radius:8px;
+  overflow:hidden;
+  border:1px solid #dfe4ea;
+  transform-origin:top left;
+}
+.preview-header {
+  height:92px;
+  background:#fdfdfd;
+  position:relative;
+  border-bottom:1px solid #e7eaef;
+}
+.preview-time {
+  position:absolute;
+  top:7px;
+  left:30px;
+  font-size:16px;
+  font-weight:800;
+  color:#111;
+}
+.preview-group {
+  position:absolute;
+  top:45px;
+  left:56px;
+  right:56px;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+  font-size:22px;
+  line-height:1.2;
+  font-weight:850;
+  color:#000;
+}
+.preview-chat { padding:20px 16px 22px; display:flex; gap:12px }
+.avatar {
+  width:50px;
+  height:50px;
+  border-radius:50%;
+  background:linear-gradient(135deg,#1f8fff,#28c2d1);
+  color:#fff;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:22px;
+  font-weight:850;
+  flex:0 0 50px;
+}
+.bubble { max-width:380px }
+.meta { display:flex; gap:8px; align-items:center; margin:0 0 6px 2px; color:#666; font-size:14px; font-weight:700 }
+.tag { background:#b9bcc2; color:#fff; border-radius:4px; padding:3px 6px; font-size:11px; line-height:1; font-weight:800 }
+.msg-bubble {
+  display:inline-block;
+  border:1px solid #cce0ff;
+  background:#eef5ff;
+  border-radius:4px 16px 16px 16px;
+  padding:12px 16px;
+  color:#000;
+  font-size:18px;
+  line-height:1.4;
+  font-weight:850;
+}
+.at { color:#1e6fff; margin-right:6px }
+.font-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px }
+.font-item {
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--panel2);
+  padding:13px;
+}
+.font-item.current { border-color:var(--blue); background:var(--blue2) }
+.font-name { font-weight:800; word-break:break-all; margin-bottom:5px }
+.font-meta { color:var(--muted); font-size:12px; margin-bottom:10px }
+.font-actions { display:flex; gap:8px; flex-wrap:wrap }
+#fontFile { display:none }
+@media (max-width:900px) {
+  .grid { grid-template-columns:1fr }
+  .phone { transform:scale(.82); margin-bottom:-34px }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <h1>谁艾特我Pro渲染设置</h1>
+      <div class="sub">调整结果图顶部时间、群名称位置，并管理生成图片使用的字体。</div>
+    </div>
+    <button id="reloadBtn">刷新</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>顶部位置</h2>
+      <div class="section">
+        <div class="row">
+          <div><label for="timeX">时间 X</label><input id="timeX" type="number" min="0" max="600" step="1"></div>
+          <div><label for="timeY">时间 Y</label><input id="timeY" type="number" min="0" max="120" step="1"></div>
+        </div>
+        <div class="row">
+          <div><label for="groupX">群名 X</label><input id="groupX" type="number" min="0" max="600" step="1"></div>
+          <div><label for="groupY">群名 Y</label><input id="groupY" type="number" min="0" max="120" step="1"></div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="saveLayout">保存位置</button>
+          <button id="resetLayout">恢复默认</button>
+        </div>
+        <div class="msg" id="layoutMsg"></div>
+      </div>
+
+      <h2>字体</h2>
+      <div class="section">
+        <input id="fontFile" type="file" accept=".ttf,.otf,.woff,.woff2,.ttc">
+        <div class="actions">
+          <button class="primary" id="uploadFont">上传字体</button>
+          <button id="defaultFont">使用默认字体</button>
+        </div>
+        <div class="msg" id="fontMsg"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>预览</h2>
+      <div class="preview-wrap">
+        <div class="phone">
+          <div class="preview-header">
+            <div class="preview-time" id="previewTime">21:30</div>
+            <div class="preview-group" id="previewGroup">闲聊群(80) 👂</div>
+          </div>
+          <div class="preview-chat">
+            <div class="avatar">小</div>
+            <div class="bubble">
+              <div class="meta"><span class="tag">LV100 群主</span><span>小祥²</span></div>
+              <div class="msg-bubble"><span class="at">@yuuki</span> 这是一条艾特记录预览</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="font-list" id="fontList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+const B = window.AstrBotPluginPage;
+if (B) await B.ready();
+
+const defaults = { time_x:30, time_y:7, group_x:56, group_y:45 };
+let state = { layout:{ ...defaults }, fonts:[], current_name:'' };
+
+const $ = id => document.getElementById(id);
+const fields = {
+  time_x: $('timeX'),
+  time_y: $('timeY'),
+  group_x: $('groupX'),
+  group_y: $('groupY')
+};
+
+function dataOf(resp) { return resp && resp.data ? resp.data : resp; }
+function apiGet(path) {
+  if (B && B.apiGet) return B.apiGet(path);
+  return fetch(path).then(r => r.json());
+}
+function apiPost(path, payload) {
+  if (B && B.apiPost) return B.apiPost(path, payload || {});
+  return fetch(path, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(payload || {}) }).then(r => r.json());
+}
+function setMsg(id, text) { $(id).textContent = text || ''; }
+function readLayout() {
+  return {
+    time_x: Number(fields.time_x.value || defaults.time_x),
+    time_y: Number(fields.time_y.value || defaults.time_y),
+    group_x: Number(fields.group_x.value || defaults.group_x),
+    group_y: Number(fields.group_y.value || defaults.group_y)
+  };
+}
+function fillLayout(layout) {
+  const l = { ...defaults, ...(layout || {}) };
+  fields.time_x.value = l.time_x;
+  fields.time_y.value = l.time_y;
+  fields.group_x.value = l.group_x;
+  fields.group_y.value = l.group_y;
+  updatePreview();
+}
+function updatePreview() {
+  const l = readLayout();
+  $('previewTime').style.left = l.time_x + 'px';
+  $('previewTime').style.top = l.time_y + 'px';
+  $('previewGroup').style.left = l.group_x + 'px';
+  $('previewGroup').style.top = l.group_y + 'px';
+}
+function renderFonts() {
+  const fonts = state.fonts || [];
+  if (!fonts.length) {
+    $('fontList').innerHTML = '<div class="msg">还没有上传字体。</div>';
+    return;
+  }
+  $('fontList').innerHTML = fonts.map(f => (
+    '<div class="font-item' + (f.is_current ? ' current' : '') + '">'
+    + '<div class="font-name">' + escapeHtml(f.name) + '</div>'
+    + '<div class="font-meta">' + escapeHtml(f.size_text || '') + (f.is_current ? ' · 使用中' : '') + '</div>'
+    + '<div class="font-actions">'
+    + '<button class="use-font" data-path="' + escapeAttr(f.path) + '">使用</button>'
+    + '<button class="danger del-font" data-path="' + escapeAttr(f.path) + '">删除</button>'
+    + '</div></div>'
+  )).join('');
+  document.querySelectorAll('.use-font').forEach(btn => {
+    btn.onclick = () => selectFont(btn.dataset.path);
+  });
+  document.querySelectorAll('.del-font').forEach(btn => {
+    btn.onclick = () => deleteFont(btn.dataset.path);
+  });
+}
+function escapeHtml(text) {
+  return String(text || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeAttr(text) { return escapeHtml(text).replace(/`/g, '&#96;'); }
+async function loadAll() {
+  setMsg('layoutMsg', '加载中...');
+  try {
+    const resp = await apiGet('layout');
+    state = dataOf(resp) || state;
+    fillLayout(state.layout);
+    renderFonts();
+    setMsg('layoutMsg', '');
+    setMsg('fontMsg', state.current_name ? '当前字体：' + state.current_name : '当前字体：默认字体');
+  } catch (e) {
+    setMsg('layoutMsg', '加载失败');
+  }
+}
+async function saveLayout(layout) {
+  setMsg('layoutMsg', '保存中...');
+  const resp = await apiPost('layout', { layout });
+  if (resp && resp.status === 'error') {
+    setMsg('layoutMsg', resp.message || '保存失败');
+    return;
+  }
+  state = dataOf(resp) || state;
+  fillLayout(state.layout);
+  setMsg('layoutMsg', '已保存');
+}
+function uploadFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => apiPost('fonts/upload', { filename:file.name, content:String(reader.result || '') }).then(resolve).catch(reject);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function selectFont(path) {
+  setMsg('fontMsg', '保存中...');
+  const resp = await apiPost('fonts/select', { font_path:path || '' });
+  setMsg('fontMsg', resp && resp.status === 'error' ? resp.message : '字体设置已保存');
+  await loadAll();
+}
+async function deleteFont(path) {
+  setMsg('fontMsg', '删除中...');
+  const resp = await apiPost('fonts/delete', { font_path:path || '' });
+  setMsg('fontMsg', resp && resp.status === 'error' ? resp.message : '字体已删除');
+  await loadAll();
+}
+
+Object.values(fields).forEach(input => input.addEventListener('input', updatePreview));
+$('saveLayout').onclick = () => saveLayout(readLayout());
+$('resetLayout').onclick = () => saveLayout(defaults);
+$('reloadBtn').onclick = loadAll;
+$('defaultFont').onclick = () => selectFont('');
+$('uploadFont').onclick = () => $('fontFile').click();
+$('fontFile').onchange = async function() {
+  const file = this.files && this.files[0];
+  if (!file) return;
+  setMsg('fontMsg', '上传中...');
+  try {
+    const resp = await uploadFile(file);
+    setMsg('fontMsg', resp && resp.status === 'error' ? resp.message : '字体已上传并启用');
+    this.value = '';
+    await loadAll();
+  } catch (e) {
+    setMsg('fontMsg', '上传失败');
+    this.value = '';
+  }
+};
+await loadAll();
+</script>
+</body>
+</html>
