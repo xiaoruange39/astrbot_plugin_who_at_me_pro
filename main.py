@@ -340,7 +340,6 @@ HTML_TEMPLATE = r"""
                   <div class="msg-info">
                     {% if msg.tag_text %}<span class="tag-pill" style="background: {{ msg.tag_color }}">{{ msg.tag_text }}</span>{% endif %}
                     <span class="nickname">{{ msg.nickname }}</span>
-                    {% if msg.member_title %}<span class="member-title">{{ msg.member_title }}</span>{% endif %}
                   </div>
                   <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
                     {% if msg.quote %}
@@ -1288,14 +1287,15 @@ class WhoAtMePlugin(Star):
         if is_at:
             message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
         role = str(data.get("role") or "member").lower()
-        role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "")
+        role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
         member_title = str(data.get("member_title") or title or "")
         user_id = str(data.get("user_id") or data.get("User") or "")
         level = self._level_text(data.get("level"))
+        identity_text = member_title or role_text
         tag_parts = [f"LV{level}"] if level else []
-        if role_text and not member_title:
-            tag_parts.append(role_text)
+        if identity_text:
+            tag_parts.append(identity_text)
         tag_text = " ".join(tag_parts)
         tag_color = "#b4b4b6"
         if role == "owner":
