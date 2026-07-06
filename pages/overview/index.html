@@ -85,17 +85,16 @@ button:disabled { opacity:.55; cursor:not-allowed }
   transform-origin:top left;
 }
 .preview-header {
-  height:92px;
+  min-height:64px;
   background:#fdfdfd;
   position:relative;
   border-bottom:1px solid #e7eaef;
 }
 .preview-header-img {
-  position:absolute;
-  inset:0;
+  display:block;
   width:100%;
-  height:100%;
-  object-fit:cover;
+  height:auto;
+  min-height:64px;
 }
 .preview-time {
   position:absolute;
