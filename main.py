@@ -1535,7 +1535,11 @@ class WhoAtMePlugin(Star):
             "name": name,
             "message": message,
             "images": self._unique_strings(images),
-            "time": self._first_mapping_value(data, ["time", "timestamp"]) or 0,
+            "time": self._first_mapping_value(
+                data,
+                ["time", "timestamp", "send_time", "sendTime", "message_time", "messageTime", "msg_time", "msgTime"],
+            )
+            or 0,
         }
         return quote if self._quote_has_identity(quote) else None
 
@@ -2033,7 +2037,12 @@ class WhoAtMePlugin(Star):
 
     def _time_text(self, value: Any) -> str:
         try:
-            return datetime.fromtimestamp(int(value)).strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = int(float(value))
+            if timestamp <= 0:
+                return ""
+            if timestamp > 10_000_000_000:
+                timestamp //= 1000
+            return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return ""
 
