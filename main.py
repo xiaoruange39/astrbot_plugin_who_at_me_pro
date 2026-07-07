@@ -1204,21 +1204,7 @@ class WhoAtMePlugin(Star):
                     f"[谁艾特我] 浏览器直渲失败，回退到 AstrBot html_render: {type(exc).__name__}: {exc}",
                     exc_info=True,
                 )
-        rendered = await asyncio.wait_for(
-            self.html_render(
-                HTML_TEMPLATE,
-                data,
-                options={
-                    "type": "jpeg",
-                    "quality": self._render_quality(),
-                    "width": 600,
-                    "viewport": {"width": 600, "height": 800},
-                    "full_page": True,
-                    "timeout": self._render_page_timeout_ms(),
-                },
-            ),
-            timeout=timeout,
-        )
+        rendered = await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout)
         return self._crop_html_render_image(rendered)
 
     async def _try_send(self, event: AstrMessageEvent, result: Any) -> bool:
@@ -1386,6 +1372,22 @@ class WhoAtMePlugin(Star):
                     await browser.close()
         return str(output_path)
 
+    async def _render_html_with_t2i(self, template: str, data: dict[str, Any]) -> Any:
+        from jinja2 import Environment
+
+        self._cleanup_old_renders()
+        html_text = Environment(autoescape=True).from_string(template).render(**data)
+        options = {
+            "type": "jpeg",
+            "quality": self._render_quality(),
+            "full_page": True,
+            "timeout": self._render_page_timeout_ms(),
+        }
+        try:
+            return await self.html_render(html_text, {}, False, options)
+        except TypeError:
+            return await self.html_render(html_text, {}, options=options)
+
     async def _wait_for_browser_assets(self, page: Any) -> None:
         asset_timeout = min(10000, max(1000, self._render_page_timeout_ms() // 2))
         try:
@@ -1425,21 +1427,22 @@ class WhoAtMePlugin(Star):
         except Exception as exc:
             logger.debug(f"[谁艾特我] 等待浏览器资源加载失败，继续截图: {type(exc).__name__}: {exc}")
 
-    def _crop_html_render_image(self, image_ref: str) -> str:
+    def _crop_html_render_image(self, image_ref: Any) -> str:
         path = self._local_image_ref_path(image_ref)
         if not path:
-            return image_ref
+            return str(image_ref)
+        image_ref_text = str(path)
         try:
             from PIL import Image
         except Exception as exc:
             logger.debug(f"[谁艾特我] Pillow 不可用，跳过 t2i 裁剪: {type(exc).__name__}: {exc}")
-            return image_ref
+            return image_ref_text
 
         try:
             with Image.open(path) as image:
                 crop_width = self._detect_render_content_width(image)
                 if image.width <= crop_width + 4:
-                    return image_ref
+                    return image_ref_text
 
                 output = self._new_render_path()
                 frame = image.convert("RGB").crop((0, 0, crop_width, image.height))
@@ -1448,12 +1451,28 @@ class WhoAtMePlugin(Star):
                 return str(output)
         except Exception as exc:
             logger.warning(f"[谁艾特我] 裁剪 t2i 图片失败，使用原图: {type(exc).__name__}: {exc}")
-            return image_ref
+            return image_ref_text
 
-    def _local_image_ref_path(self, image_ref: str) -> Path | None:
+    def _local_image_ref_path(self, image_ref: Any) -> Path | None:
+        if isinstance(image_ref, bytes | bytearray):
+            return self._store_render_bytes(bytes(image_ref))
+
         text = str(image_ref or "").strip()
-        if not text or text.startswith("base64://"):
+        if not text:
             return None
+        if text.startswith("base64://"):
+            try:
+                return self._store_render_bytes(base64.b64decode(text[len("base64://") :]))
+            except Exception as exc:
+                logger.debug(f"[谁艾特我] 解析 base64 t2i 图片失败: {type(exc).__name__}: {exc}")
+                return None
+        if text.lower().startswith("data:image/"):
+            try:
+                _, payload = text.split(",", 1)
+                return self._store_render_bytes(base64.b64decode(payload))
+            except Exception as exc:
+                logger.debug(f"[谁艾特我] 解析 data-uri t2i 图片失败: {type(exc).__name__}: {exc}")
+                return None
         if re.match(r"^https?://", text, re.I):
             return self._download_render_image(text)
         if text.lower().startswith("file:"):
@@ -1467,6 +1486,17 @@ class WhoAtMePlugin(Star):
         try:
             return path if path.is_file() else None
         except OSError:
+            return None
+
+    def _store_render_bytes(self, data: bytes) -> Path | None:
+        if not data:
+            return None
+        try:
+            output = self._new_render_path()
+            output.write_bytes(data)
+            return output if output.is_file() else None
+        except Exception as exc:
+            logger.debug(f"[谁艾特我] 保存 t2i 图片失败: {type(exc).__name__}: {exc}")
             return None
 
     def _download_render_image(self, url: str) -> Path | None:
