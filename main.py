@@ -60,6 +60,7 @@ IMAGE_MIME_TYPES = {
 }
 REFERENCE_SEGMENT_TYPES = {"reply", "quote", "source", "reference"}
 POKE_SEGMENT_TYPES = {"poke", "nudge", "touch", "pat"}
+POKE_ACTION_TOKENS = ("戳了戳", "拍了拍", "摸了摸", "揉了揉", "亲了亲", "贴了贴", "碰了碰")
 PAGE_SETTINGS_DEFAULTS = {
     "time_x": 30,
     "time_y": 7,
@@ -405,6 +406,7 @@ HTML_TEMPLATE = r"""
                     <span class="poke-name">{{ msg.poke_actor }}</span>
                     <span>&nbsp;{{ msg.poke_action }}&nbsp;</span>
                     <span class="poke-name">{{ msg.poke_target }}</span>
+                    {% if msg.poke_suffix %}<span>{{ msg.poke_suffix }}</span>{% endif %}
                   </div>
                 </div>
               {% else %}
@@ -927,7 +929,11 @@ class WhoAtMePlugin(Star):
             else {}
         )
         quote = await self._quote(event) if mentions or context_on or reminder_context_on else None
-        current = self._context_message(event, sender_info, quote) if context_on or reminder_context_on else None
+        current = (
+            await self._context_message(event, group_id, sender_info, quote)
+            if context_on or reminder_context_on
+            else None
+        )
 
         if context_on and current:
             await self._append_after_context(group_id, current)
@@ -944,7 +950,7 @@ class WhoAtMePlugin(Star):
                 if reminder_context_on and reminder_before_count > 0
                 else []
             )
-            record = self._mention_record(event, targets, sender_info, quote)
+            record = await self._mention_record(event, group_id, targets, sender_info, quote)
             if context_on:
                 record["is_context"] = True
                 record["before"] = before
@@ -1870,6 +1876,7 @@ class WhoAtMePlugin(Star):
             "poke_actor": self._display_name((poke or {}).get("actor"), nickname),
             "poke_target": self._display_name((poke or {}).get("target"), default="对方"),
             "poke_action": str((poke or {}).get("action") or "👋 拍了拍"),
+            "poke_suffix": str((poke or {}).get("suffix") or ""),
         }
 
     def _view_quote(self, quote: Any) -> dict[str, Any] | None:
@@ -1993,9 +2000,10 @@ class WhoAtMePlugin(Star):
                 deduped.append(record)
         return deduped
 
-    def _mention_record(
+    async def _mention_record(
         self,
         event: AstrMessageEvent,
+        group_id: str,
         mentions: list[str] | None = None,
         member_info: dict[str, Any] | None = None,
         quote: dict[str, Any] | None = None,
@@ -2007,7 +2015,7 @@ class WhoAtMePlugin(Star):
         sender_name = self._display_name(member_info.get("card"), member_info.get("nickname"), self._sender_name(event), sender_id)
         images = self._images(event)
         message = self._message_text_for_record(event, mentions or [])
-        poke = self._poke_message(event, sender_name)
+        poke = await self._poke_message(event, group_id, sender_name)
         record = {
             "user_id": sender_id,
             "message": message,
@@ -2026,13 +2034,14 @@ class WhoAtMePlugin(Star):
             record["quote"] = quote
         return record
 
-    def _context_message(
+    async def _context_message(
         self,
         event: AstrMessageEvent,
+        group_id: str,
         member_info: dict[str, Any] | None = None,
         quote: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        record = self._mention_record(event, member_info=member_info, quote=quote)
+        record = await self._mention_record(event, group_id, member_info=member_info, quote=quote)
         context = {
             "user_id": record["user_id"],
             "message": record["message"],
@@ -2247,17 +2256,17 @@ class WhoAtMePlugin(Star):
         text = self._strip_cq_display(text)
         return self._strip_at_display(text, mentions) if mentions else text
 
-    def _poke_message(self, event: AstrMessageEvent, sender_name: str) -> dict[str, str] | None:
+    async def _poke_message(self, event: AstrMessageEvent, group_id: str, sender_name: str) -> dict[str, str] | None:
         raw = getattr(event.message_obj, "raw_message", None)
         if isinstance(raw, dict):
             poke = self._poke_from_mapping(raw, sender_name)
             if poke:
-                return poke
+                return await self._resolve_poke_message(event, group_id, poke)
 
         for segment in [*self._raw_message_segments(event), *self._message_chain(event)]:
             poke = self._poke_from_segment(segment, sender_name)
             if poke:
-                return poke
+                return await self._resolve_poke_message(event, group_id, poke)
         return None
 
     def _poke_from_segment(self, segment: Any, sender_name: str) -> dict[str, str] | None:
@@ -2276,16 +2285,39 @@ class WhoAtMePlugin(Star):
                 "senderName",
                 "from_name",
                 "fromName",
+                "operator_card",
+                "operatorCard",
+                "operator_nickname",
+                "operatorNickname",
                 "target_name",
                 "targetName",
+                "target_display",
+                "targetDisplay",
                 "receiver_name",
                 "receiverName",
                 "to_name",
                 "toName",
                 "target_id",
                 "targetId",
+                "target_uin",
+                "targetUin",
                 "target",
+                "receiver_id",
+                "receiverId",
+                "user_id",
+                "userId",
                 "qq",
+                "action",
+                "action_text",
+                "actionText",
+                "suffix",
+                "text",
+                "display",
+                "summary",
+                "prompt",
+                "msg",
+                "raw_info",
+                "rawInfo",
             ]
             data = {name: getattr(segment, name, None) for name in names}
         if not isinstance(data, dict):
@@ -2301,6 +2333,10 @@ class WhoAtMePlugin(Star):
             return None
 
         actor = self._display_name(
+            data.get("operator_card"),
+            data.get("operatorCard"),
+            data.get("operator_nickname"),
+            data.get("operatorNickname"),
             data.get("operator_name"),
             data.get("operatorName"),
             data.get("sender_name"),
@@ -2314,28 +2350,145 @@ class WhoAtMePlugin(Star):
             data.get("name"),
             sender_name,
         )
+        target_id = self._first_poke_target_id(data)
         target = self._display_name(
             data.get("target_name"),
             data.get("targetName"),
+            data.get("target_display"),
+            data.get("targetDisplay"),
+            data.get("target_card"),
+            data.get("targetCard"),
+            data.get("target_nickname"),
+            data.get("targetNickname"),
             data.get("receiver_name"),
             data.get("receiverName"),
             data.get("to_name"),
             data.get("toName"),
             data.get("poked_name"),
             data.get("pokedName"),
-            data.get("target_card"),
-            data.get("targetCard"),
-            data.get("target_nickname"),
-            data.get("targetNickname"),
-            data.get("target_id"),
-            data.get("targetId"),
-            data.get("target"),
-            data.get("receiver_id"),
-            data.get("receiverId"),
-            data.get("qq"),
-            default="对方",
+            default="",
         )
-        return {"actor": actor, "target": target, "action": "👋 拍了拍"}
+        if not target and data.get("target") and not self._looks_like_numeric_id(data.get("target")):
+            target = str(data.get("target"))
+        raw_text = self._poke_raw_text(data)
+        action = self._display_name(
+            data.get("action"),
+            data.get("action_text"),
+            data.get("actionText"),
+            data.get("poke_action"),
+            data.get("pokeAction"),
+            default="",
+        )
+        suffix = self._display_name(
+            data.get("suffix"),
+            data.get("append"),
+            data.get("tail"),
+            data.get("postfix"),
+            default="",
+        )
+        return {
+            "actor": actor,
+            "target": target or str(target_id or "") or "对方",
+            "target_id": str(target_id or ""),
+            "action": action or "👋 拍了拍",
+            "suffix": suffix,
+            "raw_text": raw_text,
+        }
+
+    async def _resolve_poke_message(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        poke: dict[str, str],
+    ) -> dict[str, str]:
+        target_id = str(poke.get("target_id") or "").strip()
+        target = str(poke.get("target") or "").strip()
+        if target_id and (not target or self._looks_like_numeric_id(target)):
+            target = await self._target_name(event, group_id, target_id)
+            poke["target"] = target
+
+        parsed = self._parse_poke_raw_text(str(poke.get("raw_text") or ""), target)
+        if parsed.get("action") and (not poke.get("action") or poke.get("action") == "👋 拍了拍"):
+            poke["action"] = parsed["action"]
+        if parsed.get("target") and (not poke.get("target") or self._looks_like_numeric_id(poke.get("target"))):
+            poke["target"] = parsed["target"]
+        if parsed.get("suffix") and not poke.get("suffix"):
+            poke["suffix"] = parsed["suffix"]
+
+        if not poke.get("target"):
+            poke["target"] = target_id or "对方"
+        poke["action"] = self._normalize_poke_action(str(poke.get("action") or ""), str(poke.get("raw_text") or ""))
+        return poke
+
+    def _first_poke_target_id(self, data: dict[str, Any]) -> str:
+        for key in (
+            "target_id",
+            "targetId",
+            "target_uin",
+            "targetUin",
+            "receiver_id",
+            "receiverId",
+            "to_id",
+            "toId",
+            "to_uin",
+            "toUin",
+            "qq",
+            "target",
+        ):
+            value = data.get(key)
+            if value and self._looks_like_numeric_id(value):
+                return str(value)
+        return ""
+
+    def _poke_raw_text(self, data: dict[str, Any]) -> str:
+        value = self._first_mapping_value(
+            data,
+            [
+                "raw_message",
+                "rawMessage",
+                "raw_info",
+                "rawInfo",
+                "summary",
+                "prompt",
+                "msg",
+                "message",
+                "text",
+                "display",
+                "content",
+            ],
+        )
+        if isinstance(value, list):
+            return self._segments_text(value, include_at=True)
+        return str(value or "").strip()
+
+    def _parse_poke_raw_text(self, text: str, target_name: str = "") -> dict[str, str]:
+        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not text:
+            return {}
+        for token in POKE_ACTION_TOKENS:
+            index = text.find(token)
+            if index < 0:
+                continue
+            tail = text[index + len(token) :].strip()
+            prefix = text[max(0, index - 2) : index].strip()
+            action = f"{prefix} {token}".strip() if prefix and re.fullmatch(r"[^\w\u4e00-\u9fff]+", prefix) else token
+            result = {"action": action}
+            target_name = str(target_name or "").strip()
+            if target_name and tail.startswith(target_name):
+                result["target"] = target_name
+                result["suffix"] = tail[len(target_name) :]
+            elif tail:
+                result["target"] = tail
+            return result
+        return {}
+
+    def _normalize_poke_action(self, action: str, raw_text: str = "") -> str:
+        action = re.sub(r"\s+", " ", str(action or "")).strip()
+        if action and not any(token in action for token in POKE_ACTION_TOKENS):
+            parsed = self._parse_poke_raw_text(raw_text)
+            if parsed.get("action"):
+                return parsed["action"]
+        return action or "👋 拍了拍"
 
     def _strip_at_display(self, text: str, mentions: list[str]) -> str:
         cleaned = re.sub(r"\[CQ:at,[^\]]+\]", " ", text)
@@ -2854,7 +3007,11 @@ class WhoAtMePlugin(Star):
             name = record.get("name") or record.get("user_id") or "用户"
             poke = record.get("poke")
             if isinstance(poke, dict):
-                msg = f"{poke.get('actor') or name} {poke.get('action') or '拍了拍'} {poke.get('target') or '对方'}"
+                msg = (
+                    f"{poke.get('actor') or name} "
+                    f"{poke.get('action') or '拍了拍'} "
+                    f"{poke.get('target') or '对方'}{poke.get('suffix') or ''}"
+                )
             else:
                 msg = record.get("message") or "[无文字]"
             image_count = len(record.get("images") or record.get("image") or [])
@@ -2891,7 +3048,7 @@ class WhoAtMePlugin(Star):
         poke = record.get("poke")
         if isinstance(poke, dict):
             return "poke:" + self._normalize_record_text(
-                f"{poke.get('actor') or ''}|{poke.get('action') or ''}|{poke.get('target') or ''}"
+                f"{poke.get('actor') or ''}|{poke.get('action') or ''}|{poke.get('target') or ''}|{poke.get('suffix') or ''}"
             )
         return self._normalize_record_text(record.get("message"))
 
