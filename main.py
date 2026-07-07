@@ -95,7 +95,8 @@ HTML_TEMPLATE = r"""
       color: #000;
     }
     .app.font-bold, .app.font-bold * {
-      font-weight: 800 !important;
+      font-weight: 900 !important;
+      text-shadow: 0.35px 0 0 currentColor;
     }
     .header-wrapper {
       min-height: 64px;
