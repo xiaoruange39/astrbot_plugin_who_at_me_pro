@@ -171,6 +171,12 @@
         "description": "渲染临时图片保留小时数",
         "type": "int",
         "default": 24
+      },
+      "extract_video_frame": {
+        "description": "无封面视频尝试浏览器取帧",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时无封面视频只显示占位卡片，资源消耗更低；开启后会尝试加载视频并截取一帧。"
       }
     }
   },

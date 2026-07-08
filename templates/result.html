@@ -187,6 +187,13 @@
       background: #111;
       border-radius: 8px;
     }
+    .media-card.video.placeholder {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: #fff;
+    }
     .media-video,
     .media-cover {
       display: block;
@@ -415,7 +422,7 @@
                   {% endif %}
                   <div class="msg-content">
                     <div class="msg-info">
-                      {% if msg.tag_text %}<span class="tag-pill" style="background: {{ msg.tag_color }}">{{ msg.tag_text }}</span>{% endif %}
+                      {% if msg.tag_text %}<span class="tag-pill" style="background: {{ msg.tag_color }}; color: {{ msg.tag_text_color }}">{{ msg.tag_text }}</span>{% endif %}
                       <span class="nickname">{{ msg.nickname }}</span>
                     </div>
                     {% if msg.quote or msg.is_at or msg.has_message or msg.images %}
@@ -453,15 +460,15 @@
                     {% endif %}
                     {% for media in msg.media %}
                       {% if media.type == "video" %}
-                        <div class="media-card video">
-                          {% if media.source %}
-                            <video src="{{ media.source }}" class="media-video" preload="metadata" muted></video>
-                          {% elif media.cover %}
+                        <div class="media-card video{% if not media.cover and not (media.source and extract_video_frame) %} placeholder{% endif %}">
+                          {% if media.cover %}
                             <img src="{{ media.cover }}" class="media-cover" onerror="this.remove()" />
+                          {% elif media.source and extract_video_frame %}
+                            <video src="{{ media.source }}" class="media-video" preload="metadata" muted></video>
                           {% else %}
-                            <div class="media-card"><span class="media-icon">▶</span><div class="media-meta"><div class="media-title">{{ media.title }}</div><div class="media-sub">视频</div></div></div>
+                            <span class="media-icon">▶</span><div class="media-meta"><div class="media-title">{{ media.title }}</div><div class="media-sub">视频</div></div>
                           {% endif %}
-                          <span class="media-play"></span>
+                          {% if media.cover or (media.source and extract_video_frame) %}<span class="media-play"></span>{% endif %}
                         </div>
                       {% elif media.type == "audio" %}
                         <div class="media-card"><span class="media-icon">♪</span><div class="media-meta"><div class="media-title">{{ media.title }}</div><div class="media-sub">语音</div></div></div>

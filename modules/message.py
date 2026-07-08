@@ -585,15 +585,17 @@ class MessageMixin:
 
     def _strip_at_display(self, text: str, mentions: list[str]) -> str:
         cleaned = re.sub(r"\[CQ:at,[^\]]+\]", " ", text)
-        cleaned = re.sub(r"(?<!\S)@\S+\([0-9]+\)", " ", cleaned)
-        cleaned = re.sub(r"(?<!\S)@\S+", " ", cleaned)
+        cleaned = re.sub(r"(?<!\S)[@＠]\S+\([0-9]+\)", " ", cleaned)
+        cleaned = re.sub(r"(?<!\S)[@＠]\S+", " ", cleaned)
         for mention in mentions:
             if not mention:
                 continue
             if mention == ALL_TARGET:
                 cleaned = cleaned.replace("@全体成员", " ").replace("@all", " ")
             else:
-                cleaned = re.sub(rf"(?<!\S)@?{re.escape(str(mention))}(?:\([0-9]+\))?(?!\S)", " ", cleaned)
+                mention_text = re.escape(str(mention).strip())
+                cleaned = re.sub(rf"(?<!\S)[@＠]?{mention_text}(?:\([0-9]+\))?(?!\S)", " ", cleaned)
+                cleaned = re.sub(rf"[@＠]?\s*{mention_text}", " ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
     def _is_reference_segment(self, item: Any) -> bool:
@@ -648,7 +650,7 @@ class MessageMixin:
             if self._is_reference_segment(segment):
                 continue
             seg_type = self._segment_type(segment)
-            if seg_type not in {"image", "mface", "market_face", "marketface", "video", "shortvideo"}:
+            if seg_type not in {"image", "mface", "market_face", "marketface"}:
                 continue
             names = [
                 "url",
@@ -750,21 +752,35 @@ class MessageMixin:
 
     def _unique_media(self, items: list[dict[str, str]]) -> list[dict[str, str]]:
         result = []
-        seen = set()
         for item in items:
             if not isinstance(item, dict):
                 continue
-            key = (
-                str(item.get("type") or ""),
-                str(item.get("source") or ""),
-                str(item.get("cover") or ""),
-                str(item.get("title") or ""),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append({k: str(v) for k, v in item.items() if v is not None})
+            current = {k: str(v) for k, v in item.items() if v is not None}
+            merged = False
+            for existing in result:
+                if self._media_items_match(existing, current):
+                    for key, value in current.items():
+                        if value and (not existing.get(key) or existing.get(key) in {"视频", "语音", "文件", "表情"}):
+                            existing[key] = value
+                    merged = True
+                    break
+            if not merged:
+                result.append(current)
         return result
+
+    def _media_items_match(self, left: dict[str, str], right: dict[str, str]) -> bool:
+        left_type = str(left.get("type") or "")
+        right_type = str(right.get("type") or "")
+        if left_type != right_type:
+            return False
+        for key in ("source", "cover"):
+            left_value = str(left.get(key) or "").strip()
+            right_value = str(right.get(key) or "").strip()
+            if left_value and right_value and left_value == right_value:
+                return True
+        if left_type == "video":
+            return True
+        return False
 
     def _segment_values(self, segment: Any, names: list[str]) -> list[Any]:
         values = []

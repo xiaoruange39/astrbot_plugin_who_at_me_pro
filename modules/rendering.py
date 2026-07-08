@@ -30,6 +30,7 @@ class RenderingMixin:
         data = dict(data)
         data.setdefault("layout", self._render_layout())
         data.setdefault("custom_font_css", self._custom_font_css())
+        data.setdefault("extract_video_frame", self._extract_video_frame())
         timeout = self._render_task_timeout_sec()
         if self._config_bool("render", "prefer_browser", default=True):
             try:
@@ -358,9 +359,24 @@ class RenderingMixin:
                     delay(assetTimeout),
                   ]);
                   for (const video of videos) {
-                    try {
-                      video.currentTime = Math.min(0.1, video.duration || 0.1);
-                    } catch (_) {}
+                    await Promise.race([
+                      new Promise((resolve) => {
+                        if (!video.duration || !Number.isFinite(video.duration)) {
+                          resolve();
+                          return;
+                        }
+                        const done = () => resolve();
+                        video.addEventListener("seeked", done, { once: true });
+                        video.addEventListener("error", done, { once: true });
+                        try {
+                          const target = Math.min(Math.max(0.5, video.duration * 0.1), Math.max(0.1, video.duration - 0.1));
+                          video.currentTime = target;
+                        } catch (_) {
+                          resolve();
+                        }
+                      }),
+                      delay(Math.min(assetTimeout, 2000)),
+                    ]);
                   }
                 }
                 """,

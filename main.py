@@ -642,6 +642,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
         images = self._record_renderable_images(data)
         media = self._record_renderable_media(data)
+        media_covers = {str(item.get("cover") or "") for item in media if isinstance(item, dict) and item.get("cover")}
+        if media_covers:
+            images = [image for image in images if image not in media_covers]
         if media and self._is_media_summary_message(message):
             message = ""
         role = str(data.get("role") or "member").lower()
@@ -655,10 +658,13 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             tag_parts.append(identity_text)
         tag_text = " ".join(tag_parts)
         tag_color = "#b4b4b6"
-        if role == "owner":
+        tag_text_color = "#fff"
+        if member_title and role != "owner":
+            tag_color = "#c77df3"
+        elif role == "owner":
             tag_color = "#f6c751"
         elif role in {"admin", "administrator"}:
-            tag_color = "#57d6c5"
+            tag_color = "#45d3c9"
         avatar = f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=100" if user_id.isdigit() else ""
         return {
             "user_id": user_id,
@@ -683,6 +689,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "level": level,
             "tag_text": tag_text,
             "tag_color": tag_color,
+            "tag_text_color": tag_text_color,
             "is_poke": bool(poke),
             "poke_actor": self._display_name((poke or {}).get("actor"), nickname),
             "poke_target": self._display_name((poke or {}).get("target"), default="对方"),

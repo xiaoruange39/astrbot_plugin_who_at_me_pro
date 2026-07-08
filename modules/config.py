@@ -85,6 +85,9 @@ class ConfigMixin:
     def _render_task_timeout_sec(self) -> int:
         return max(3, self._config_int("render", "browser_timeout_seconds", default=RENDER_TASK_TIMEOUT_SEC))
 
+    def _extract_video_frame(self) -> bool:
+        return self._config_bool("render", "extract_video_frame", default=False)
+
     def _header_image_url(self) -> str:
         return self._image_src("header")
 
