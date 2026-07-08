@@ -46,6 +46,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
         self.page_settings = self._load_page_settings()
         self._font_css_cache_key: tuple[str, int, int] | None = None
         self._font_css_cache_value = ""
+        self._receive_order = 0
         self.started_at = int(time.time())
 
     def _register_page_apis(self, context: Context) -> None:
@@ -1265,6 +1266,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
                 {
                     "at_time": record.get("time", 0),
                     "at_order": self._record_order(record),
+                    "at_received_order": self._record_received_order(record),
                     "msgs": self._dedupe_messages(messages),
                 }
             )
@@ -1273,6 +1275,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             key=lambda item: (
                 self._numeric_order(item.get("at_time")) or 0,
                 item.get("at_order") if item.get("at_order") is not None else -1,
+                item.get("at_received_order") if item.get("at_received_order") is not None else -1,
             ),
             reverse=reverse,
         )
@@ -1399,13 +1402,18 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             self._record_quote_key(msg),
         )
 
-    def _message_sort_key(self, msg: dict[str, Any]) -> tuple[int, float, int, int]:
+    def _message_sort_key(self, msg: dict[str, Any]) -> tuple[float, int, int, int, int]:
         order = self._record_order(msg)
+        received_order = self._record_received_order(msg)
         phase = self._numeric_order(msg.get("sort_phase"))
         index = self._numeric_order(msg.get("sort_index"))
-        if order is not None:
-            return (0, float(order), phase or 0, index or 0)
-        return (1, float(msg.get("sort_time") or self._record_time(msg)), phase or 0, index or 0)
+        return (
+            float(msg.get("sort_time") or self._record_time(msg)),
+            order if order is not None else -1,
+            received_order if received_order is not None else -1,
+            phase or 0,
+            index or 0,
+        )
 
     def _chunk_blocks(self, blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         chunks: list[list[dict[str, Any]]] = []
@@ -1491,6 +1499,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             "time": self._timestamp(event),
             "message_id": self._event_message_id(event),
             "order": self._event_order(event),
+            "received_order": self._event_received_order(event),
         }
         if poke:
             record["poke"] = poke
@@ -1518,6 +1527,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             "time": record["time"],
             "message_id": record.get("message_id") or "",
             "order": record.get("order"),
+            "received_order": record.get("received_order"),
         }
         if record.get("poke"):
             context["poke"] = record["poke"]
@@ -2491,6 +2501,19 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
                     return order
         return self._numeric_order(self._event_message_id(event))
 
+    def _event_received_order(self, event: AstrMessageEvent) -> int:
+        holder = getattr(event, "message_obj", event)
+        cached = self._numeric_order(getattr(holder, "_who_at_me_received_order", None))
+        if cached is not None:
+            return cached
+        self._receive_order += 1
+        order = self._receive_order
+        try:
+            setattr(holder, "_who_at_me_received_order", order)
+        except Exception:
+            pass
+        return order
+
     def _timestamp(self, event: AstrMessageEvent) -> int:
         value = getattr(event.message_obj, "timestamp", None)
         try:
@@ -2652,9 +2675,17 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
                 return order
         return None
 
-    def _record_sort_key(self, record: dict[str, Any]) -> tuple[int, int]:
+    def _record_received_order(self, record: dict[str, Any]) -> int | None:
+        return self._numeric_order(record.get("received_order"))
+
+    def _record_sort_key(self, record: dict[str, Any]) -> tuple[int, int, int]:
         order = self._record_order(record)
-        return (self._record_time(record), order if order is not None else -1)
+        received_order = self._record_received_order(record)
+        return (
+            self._record_time(record),
+            order if order is not None else -1,
+            received_order if received_order is not None else -1,
+        )
 
     def _config_value(self, *keys: str, default: Any = None) -> Any:
         value: Any = self.config
