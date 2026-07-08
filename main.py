@@ -2224,7 +2224,9 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
 
     async def _target_name(self, event: AstrMessageEvent, group_id: str, target: str) -> str:
         if target == self._sender_id(event):
-            return self._sender_name(event)
+            sender_name = self._sender_name(event)
+            if sender_name and not self._looks_like_numeric_id(sender_name):
+                return sender_name
         if target == ALL_TARGET:
             return "全体成员"
         mention_name = self._mention_display_name(event, target)
