@@ -48,6 +48,7 @@ class MessageMixin:
             "received_order": self._event_received_order(event),
         }
         if mentions:
+            record["at_targets"] = [str(item) for item in mentions]
             record["at_after_image"] = self._mention_after_image(event, mentions)
         if poke:
             record["poke"] = poke
@@ -59,10 +60,11 @@ class MessageMixin:
         self,
         event: AstrMessageEvent,
         group_id: str,
+        mentions: list[str] | None = None,
         member_info: dict[str, Any] | None = None,
         quote: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        record = await self._mention_record(event, group_id, member_info=member_info, quote=quote)
+        record = await self._mention_record(event, group_id, mentions=mentions, member_info=member_info, quote=quote)
         context = {
             "user_id": record["user_id"],
             "message": record["message"],
@@ -78,6 +80,10 @@ class MessageMixin:
             "order": record.get("order"),
             "received_order": record.get("received_order"),
         }
+        if record.get("at_targets"):
+            context["at_targets"] = record["at_targets"]
+        if record.get("at_after_image"):
+            context["at_after_image"] = record["at_after_image"]
         if record.get("poke"):
             context["poke"] = record["poke"]
         if record.get("quote"):

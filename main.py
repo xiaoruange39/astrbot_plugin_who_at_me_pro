@@ -296,12 +296,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 record["after"] = []
 
             for target in targets:
-                await self._append_record(group_id, target, record)
+                target_record = dict(record)
+                target_record["target"] = target
+                await self._append_record(group_id, target, target_record)
                 queued = await self._queue_reminder_if_needed(
                     event,
                     group_id,
                     target,
-                    record,
+                    target_record,
                     reminder_context,
                     reminder_before,
                 )
@@ -317,7 +319,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     )
                 if context_on:
                     tasks = self.after_tasks.setdefault(group_id, [])
-                    tasks.append({"target": target, "time": record["time"], "count": 0})
+                    tasks.append({"target": target, "time": target_record["time"], "count": 0})
 
         if current:
             await self._append_before_context_cache(group_id, current)
@@ -340,7 +342,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             else {}
         )
         quote = await self._quote(event) if mentions or needs_context else None
-        current = await self._context_message(event, group_id, sender_info, quote) if needs_context else None
+        current = await self._context_message(event, group_id, mentions, sender_info, quote) if needs_context else None
 
         if context_on and current:
             await self._append_after_context(group_id, current)
@@ -470,7 +472,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             target_name=target_name,
             count=len(pending),
         ).strip()
-        blocks = self._build_blocks(pending, target_name, reverse=False)
+        blocks = self._build_blocks(pending, target_name, user_id, reverse=False)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_reminder_pages())
         image_paths: list[str] = []
@@ -529,9 +531,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         target_name = await self._target_name(event, group_id, target)
         total_records = len(records)
         query_reverse = self._query_reverse_order()
-        records = self._select_query_records(records, target_name, reverse=query_reverse)
+        records = self._select_query_records(records, target_name, target, reverse=query_reverse)
         records = await self._resolve_record_pokes(event, group_id, records)
-        blocks = self._build_blocks(records, target_name, reverse=query_reverse)
+        blocks = self._build_blocks(records, target_name, target, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_query_pages())
         if not chunks:
@@ -606,18 +608,24 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self.after_tasks.clear()
         return event.plain_result("已成功清除全部艾特数据")
 
-    def _build_blocks(self, records: list[dict[str, Any]], target_name: str, reverse: bool = True) -> list[dict[str, Any]]:
+    def _build_blocks(
+        self,
+        records: list[dict[str, Any]],
+        target_name: str,
+        target_id: str = "",
+        reverse: bool = True,
+    ) -> list[dict[str, Any]]:
         messages = []
         for record in records:
             if record.get("is_context"):
                 for idx, ctx in enumerate(record.get("before") or []):
-                    msg = self._view_message(ctx, False, target_name)
+                    msg = self._view_message(ctx, False, target_name, target_id)
                     msg["sort_phase"] = 0
                     msg["sort_index"] = idx
                     msg["sort_time"] = float(ctx.get("time", 0)) - 0.01 + idx * 0.001
                     messages.append(msg)
 
-            main = self._view_message(record, True, target_name)
+            main = self._view_message(record, True, target_name, target_id)
             main["sort_phase"] = 1
             main["sort_index"] = 0
             main["sort_time"] = float(record.get("time", 0))
@@ -625,7 +633,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
             if record.get("is_context"):
                 for idx, ctx in enumerate(record.get("after") or []):
-                    msg = self._view_message(ctx, False, target_name)
+                    msg = self._view_message(ctx, False, target_name, target_id)
                     msg["sort_phase"] = 2
                     msg["sort_index"] = idx
                     msg["sort_time"] = float(ctx.get("time", 0)) + 0.001 + idx * 0.001
@@ -634,13 +642,11 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         messages = self._dedupe_timeline_messages(messages, reverse=reverse)
         return self._split_timeline_blocks(messages)
 
-    def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str) -> dict[str, Any]:
+    def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str, target_id: str = "") -> dict[str, Any]:
         user_id = str(data.get("user_id") or data.get("User") or "")
         nickname = self._display_name(data.get("name"), data.get("nickname"), user_id, default="用户")
         poke = data.get("poke") if isinstance(data.get("poke"), dict) else None
         message = str(data.get("message") or "")
-        if is_at:
-            message = self._strip_at_display(message, [target_name, data.get("target"), data.get("at"), data.get("AtQQ")])
         images = self._record_renderable_images(data)
         media = self._record_renderable_media(data)
         media_covers = {str(item.get("cover") or "") for item in media if isinstance(item, dict) and item.get("cover")}
@@ -648,7 +654,21 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             images = [image for image in images if image not in media_covers]
         if media and self._is_media_summary_message(message):
             message = ""
-        at_after_image = bool(data.get("at_after_image") and images)
+        at_targets = [data.get("target"), data.get("at"), data.get("AtQQ")]
+        if isinstance(data.get("at_targets"), list):
+            at_targets.extend(data["at_targets"])
+        at_candidates = [target_name, target_id, *at_targets]
+        inferred_at = bool(target_id and str(target_id) in {str(item) for item in at_targets if item is not None})
+        if not inferred_at and (images or media) and self._starts_with_at_display(message):
+            inferred_at = any(
+                re.search(rf"^[@\uff20]\s*{re.escape(str(item).strip())}(?:\([0-9]+\))?(?=\s|$)", message.lstrip())
+                for item in (target_name, target_id)
+                if str(item or "").strip()
+            )
+        render_is_at = bool(is_at or inferred_at)
+        if render_is_at:
+            message = self._strip_at_display(message, at_candidates)
+        at_after_image = bool((data.get("at_after_image") or inferred_at) and images)
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
@@ -685,7 +705,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "quote": self._view_quote(data.get("quote")),
             "time": data.get("time", 0),
             "time_text": self._time_text(data.get("time", 0)),
-            "is_at": is_at,
+            "is_at": render_is_at,
             "at_after_image": at_after_image,
             "target_name": target_name,
             "role_class": role if role in {"owner", "admin", "administrator"} else "",
@@ -741,6 +761,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return result
 
     def _timeline_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
+        loose_key = self._timeline_loose_message_key(msg)
+        if loose_key:
+            return loose_key
         message_id = str(msg.get("message_id") or "")
         if message_id:
             return ("message_id", message_id)
@@ -754,9 +777,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 order if order is not None else -1,
                 received_order if received_order is not None else -1,
             )
-        loose_key = self._timeline_loose_message_key(msg)
-        if loose_key:
-            return loose_key
         return self._message_key(msg)
 
     def _timeline_loose_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
@@ -766,10 +786,16 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         media = self._record_media_key(msg)
         if not images and not media:
             return ()
+        message = self._strip_at_display(
+            str(msg.get("message") or ""),
+            [msg.get("target_name"), msg.get("target"), msg.get("at"), msg.get("AtQQ")],
+        )
         return (
             "visual_at",
             str(msg.get("user_id") or ""),
             self._record_time(msg),
+            self._normalize_record_text(message),
+            str(msg.get("target_name") or ""),
             images,
             media,
             self._record_quote_key(msg),
@@ -890,7 +916,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self,
         records: list[dict[str, Any]],
         target_name: str,
-        reverse: bool,
+        target_id: str = "",
+        reverse: bool = True,
     ) -> list[dict[str, Any]]:
         max_pages = self._max_query_pages()
         if max_pages <= 0:
@@ -900,7 +927,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         latest_first = sorted(records, key=self._record_sort_key, reverse=True)
         for record in latest_first:
             trial = selected + [record]
-            blocks = self._build_blocks(trial, target_name, reverse=True)
+            blocks = self._build_blocks(trial, target_name, target_id, reverse=True)
             if len(self._chunk_blocks(blocks)) > max_pages:
                 if not selected:
                     selected = trial
