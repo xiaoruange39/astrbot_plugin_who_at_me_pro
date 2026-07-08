@@ -28,7 +28,12 @@ class DataMixin:
         if any(self._records_are_duplicate(item, record) for item in records[-10:]):
             return
         records.append(await self._cache_record_images(dict(record)))
-        records = records[-self._max_records_per_target():]
+        max_records = self._max_records_per_target()
+        dropped_records = records[:-max_records]
+        records = records[-max_records:]
+        for dropped in dropped_records:
+            if isinstance(dropped, dict):
+                self._drop_record_image_cache(dropped, delete_files=True)
         self._prune_record_image_caches(records)
         await self.put_kv_data(key, records)
         await self._remember_index_key(key)
@@ -192,8 +197,17 @@ class DataMixin:
             if cache_dir == path or cache_dir not in path.parents:
                 return
             path.unlink(missing_ok=True)
+            self._remove_empty_cache_parents(path.parent, cache_dir)
         except OSError:
             pass
+
+    def _remove_empty_cache_parents(self, path: Path, stop_at: Path) -> None:
+        while path != stop_at and stop_at in path.parents:
+            try:
+                path.rmdir()
+            except OSError:
+                break
+            path = path.parent
 
     async def _get_records(self, group_id: str, target: str) -> list[dict[str, Any]]:
         records = await self.get_kv_data(self._record_key(group_id, target), [])
