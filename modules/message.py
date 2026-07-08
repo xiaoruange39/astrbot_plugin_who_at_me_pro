@@ -620,9 +620,8 @@ class MessageMixin:
         return action or "👋 拍了拍"
 
     def _strip_at_display(self, text: str, mentions: list[str]) -> str:
+        at = r"[@\uff20]"
         cleaned = re.sub(r"\[CQ:at,[^\]]+\]", " ", text)
-        cleaned = re.sub(r"(?<!\S)[@＠]\S+\([0-9]+\)", " ", cleaned)
-        cleaned = re.sub(r"(?<!\S)[@＠]\S+", " ", cleaned)
         for mention in mentions:
             if not mention:
                 continue
@@ -630,8 +629,9 @@ class MessageMixin:
                 cleaned = cleaned.replace("@全体成员", " ").replace("@all", " ")
             else:
                 mention_text = re.escape(str(mention).strip())
-                cleaned = re.sub(rf"(?<!\S)[@＠]?{mention_text}(?:\([0-9]+\))?(?!\S)", " ", cleaned)
-                cleaned = re.sub(rf"[@＠]?\s*{mention_text}", " ", cleaned)
+                cleaned = re.sub(rf"{at}\s*{mention_text}(?:\([0-9]+\))?", " ", cleaned)
+        cleaned = re.sub(rf"(?<!\S){at}\S+\([0-9]+\)", " ", cleaned)
+        cleaned = re.sub(rf"(?<!\S){at}\S+", " ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
     def _is_reference_segment(self, item: Any) -> bool:
