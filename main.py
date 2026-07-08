@@ -133,6 +133,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             self._disable_llm(event)
             if sender_id:
                 await self.delete_kv_data(self._reminder_pending_key(group_id, sender_id))
+                await self._record_context_message(event, group_id, mentions, append_to_cache=True)
                 await self._update_last_active(group_id, sender_id, self._timestamp(event))
             command_result = await self._handle_command(event, group_id, text, mentions)
             for result in command_result or []:
@@ -274,25 +275,14 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
         group_id: str,
         mentions: list[str],
     ) -> None:
-        context_on = await self._context_enabled(group_id)
-        reminder_context = await self._reminder_context_config(group_id)
-        reminder_context_on = bool(reminder_context.get("enabled"))
-        sender_info = (
-            await self._member_info(event, group_id, self._sender_id(event))
-            if mentions or context_on or reminder_context_on
-            else {}
-        )
-        quote = await self._quote(event) if mentions or context_on or reminder_context_on else None
-        current = (
-            await self._context_message(event, group_id, sender_info, quote)
-            if context_on or reminder_context_on
-            else None
-        )
+        context_state = await self._record_context_message(event, group_id, mentions, append_to_cache=False)
+        context_on = bool(context_state.get("context_on"))
+        reminder_context = context_state["reminder_context"]
+        reminder_context_on = bool(context_state.get("reminder_context_on"))
+        sender_info = context_state["sender_info"]
+        quote = context_state["quote"]
 
-        if context_on and current:
-            await self._append_after_context(group_id, current)
-        if reminder_context_on and current:
-            await self._append_reminder_after_context(group_id, current)
+        current = context_state["current"]
 
         self_id = self._self_id(event)
         targets = [target for target in mentions if target not in {self._sender_id(event), self_id}]
@@ -334,10 +324,49 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
                     tasks = self.after_tasks.setdefault(group_id, [])
                     tasks.append({"target": target, "time": record["time"], "count": 0})
 
-        if (context_on or reminder_context_on) and current:
-            cache = self.before_cache.setdefault(group_id, [])
-            cache.append(current)
-            del cache[:-max(self._query_context_max_messages(), self._max_reminder_context())]
+        if current:
+            await self._append_before_context_cache(group_id, current)
+
+    async def _record_context_message(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        mentions: list[str],
+        *,
+        append_to_cache: bool,
+    ) -> dict[str, Any]:
+        context_on = await self._context_enabled(group_id)
+        reminder_context = await self._reminder_context_config(group_id)
+        reminder_context_on = bool(reminder_context.get("enabled"))
+        needs_context = context_on or reminder_context_on
+        sender_info = (
+            await self._member_info(event, group_id, self._sender_id(event))
+            if mentions or needs_context
+            else {}
+        )
+        quote = await self._quote(event) if mentions or needs_context else None
+        current = await self._context_message(event, group_id, sender_info, quote) if needs_context else None
+
+        if context_on and current:
+            await self._append_after_context(group_id, current)
+        if reminder_context_on and current:
+            await self._append_reminder_after_context(group_id, current)
+        if append_to_cache and current:
+            await self._append_before_context_cache(group_id, current)
+
+        return {
+            "context_on": context_on,
+            "reminder_context": reminder_context,
+            "reminder_context_on": reminder_context_on,
+            "sender_info": sender_info,
+            "quote": quote,
+            "current": current,
+        }
+
+    async def _append_before_context_cache(self, group_id: str, current: dict[str, Any]) -> None:
+        cache = self.before_cache.setdefault(group_id, [])
+        cache.append(current)
+        del cache[:-max(self._query_context_max_messages(), self._max_reminder_context())]
 
     async def _append_after_context(self, group_id: str, current: dict[str, Any]) -> None:
         tasks = self.after_tasks.get(group_id, [])
