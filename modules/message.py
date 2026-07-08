@@ -28,7 +28,7 @@ class MessageMixin:
         member_info = member_info or {}
         role = str(member_info.get("role") or getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "member")
         sender_name = self._display_name(member_info.get("card"), member_info.get("nickname"), self._sender_name(event), sender_id)
-        images = self._images(event)
+        images = await self._images(event)
         media = self._media(event)
         message = self._message_text_for_record(event, mentions or [])
         poke = await self._poke_message(event, group_id, sender_name)
@@ -235,7 +235,7 @@ class MessageMixin:
             self._append_mention(result, value)
         return list(dict.fromkeys(result))
 
-    def _images(self, event: AstrMessageEvent) -> list[str]:
+    async def _images(self, event: AstrMessageEvent) -> list[str]:
         images = []
         raw_segments = self._raw_message_segments(event)
         if raw_segments:
@@ -243,7 +243,39 @@ class MessageMixin:
         images.extend(self._segments_images(self._message_chain(event)))
         for text in self._raw_message_texts(event):
             images.extend(self._images_from_cq(text))
-        return self._unique_strings(images)
+        return await self._resolve_image_sources(event, self._unique_strings(images))
+
+    async def _resolve_image_sources(self, event: AstrMessageEvent, images: list[str]) -> list[str]:
+        result = []
+        for image in images:
+            text = str(image or "").strip()
+            if not text:
+                continue
+            if self._renderable_image(text):
+                result.append(text)
+                continue
+            resolved = await self._resolve_onebot_image(event, text)
+            result.append(resolved or text)
+        return self._unique_strings(result)
+
+    async def _resolve_onebot_image(self, event: AstrMessageEvent, file_id: str) -> str:
+        file_id = str(file_id or "").strip()
+        if not file_id:
+            return ""
+        for kwargs in ({"file": file_id}, {"file_id": file_id}, {"image_id": file_id}):
+            payload = await self._call_onebot_action(event, "get_image", **kwargs)
+            data = self._mapping_data(payload)
+            value = self._first_mapping_value(
+                data,
+                ["url", "path", "file_path", "filePath", "local_path", "localPath", "src", "image", "base64", "file"],
+            )
+            if not value or str(value) == file_id:
+                continue
+            text = str(value).strip()
+            if data.get("base64") == value and not text.startswith(("base64://", "data:image/")):
+                return f"base64://{text}"
+            return text
+        return ""
 
     def _media(self, event: AstrMessageEvent) -> list[dict[str, str]]:
         media: list[dict[str, str]] = []
@@ -284,9 +316,13 @@ class MessageMixin:
 
     def _raw_message_segments(self, event: AstrMessageEvent) -> list[dict[str, Any]]:
         raw = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw, list):
+            return [segment for segment in raw if isinstance(segment, dict)]
         if not isinstance(raw, dict):
             return []
         segments = raw.get("message") or raw.get("message_chain") or []
+        if isinstance(segments, dict):
+            segments = self._segments_from_value(segments)
         return [segment for segment in segments if isinstance(segment, dict)]
 
     def _message_chain(self, event: AstrMessageEvent) -> list[Any]:
@@ -661,6 +697,10 @@ class MessageMixin:
                 "localPath",
                 "src",
                 "image",
+                "file_id",
+                "fileId",
+                "image_id",
+                "imageId",
                 "file",
             ]
             if seg_type in {"video", "shortvideo"}:
@@ -902,7 +942,7 @@ class MessageMixin:
             names = (
                 ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"]
                 if seg_type in {"video", "shortvideo"}
-                else ["url", "file", "path", "file_path", "local_path", "src", "image"]
+                else ["url", "path", "file_path", "local_path", "src", "image", "file_id", "image_id", "file"]
             )
             value = self._first_mapping_value(data, names)
             if value:
@@ -1031,7 +1071,19 @@ class MessageMixin:
     def _renderable_image(self, image: Any) -> str:
         if isinstance(image, dict):
             source = str(image.get("source") or "").strip()
-            for key in ("local", "path", "file", "url", "source"):
+            for key in (
+                "local",
+                "path",
+                "file_path",
+                "filePath",
+                "local_path",
+                "localPath",
+                "url",
+                "src",
+                "image",
+                "source",
+                "file",
+            ):
                 value = self._renderable_image(image.get(key))
                 if value:
                     return value
