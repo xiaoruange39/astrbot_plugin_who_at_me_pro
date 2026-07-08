@@ -710,20 +710,59 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return default
 
     def _dedupe_timeline_messages(self, messages: list[dict[str, Any]], reverse: bool) -> list[dict[str, Any]]:
-        at_keys = {self._message_key(msg) for msg in messages if msg.get("is_at")}
-        seen_context: set[tuple[Any, ...]] = set()
-        result = []
+        seen: dict[tuple[Any, ...], dict[str, Any]] = {}
+        order: list[tuple[Any, ...]] = []
         for msg in messages:
-            key = self._message_key(msg)
-            if msg.get("is_at"):
-                result.append(msg)
+            key = self._timeline_message_key(msg)
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = msg
+                order.append(key)
                 continue
-            if key in at_keys or key in seen_context:
-                continue
-            seen_context.add(key)
-            result.append(msg)
+            seen[key] = self._merge_timeline_message(existing, msg)
+
+        result = [seen[key] for key in order]
         result.sort(key=self._message_sort_key, reverse=reverse)
         return result
+
+    def _timeline_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
+        message_id = str(msg.get("message_id") or "")
+        if message_id:
+            return ("message_id", message_id)
+        order = self._record_order(msg)
+        received_order = self._record_received_order(msg)
+        if order is not None or received_order is not None:
+            return (
+                "order",
+                str(msg.get("user_id") or ""),
+                self._record_time(msg),
+                order if order is not None else -1,
+                received_order if received_order is not None else -1,
+            )
+        return self._message_key(msg)
+
+    def _merge_timeline_message(self, left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+        use_right = bool(right.get("is_at") and not left.get("is_at"))
+        base = dict(right if use_right else left)
+        other = left if use_right else right
+
+        base["is_at"] = bool(left.get("is_at") or right.get("is_at"))
+        if not str(base.get("message") or "").strip() and str(other.get("message") or "").strip():
+            base["message"] = other.get("message")
+            base["message_html"] = other.get("message_html")
+            base["has_message"] = bool(other.get("has_message"))
+        base["images"] = self._unique_strings([*(base.get("images") or []), *(other.get("images") or [])])
+
+        if not base.get("quote") and other.get("quote"):
+            base["quote"] = other.get("quote")
+        elif isinstance(base.get("quote"), dict) and isinstance(other.get("quote"), dict):
+            quote = dict(base["quote"])
+            quote["images"] = self._unique_strings([*(quote.get("images") or []), *(other["quote"].get("images") or [])])
+            if not quote.get("message_html") and other["quote"].get("message_html"):
+                quote["message"] = other["quote"].get("message")
+                quote["message_html"] = other["quote"].get("message_html")
+            base["quote"] = quote
+        return base
 
     def _split_timeline_blocks(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []

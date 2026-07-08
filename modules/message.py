@@ -233,10 +233,32 @@ class MessageMixin:
         return list(dict.fromkeys(result))
 
     def _images(self, event: AstrMessageEvent) -> list[str]:
+        images = []
         raw_segments = self._raw_message_segments(event)
         if raw_segments:
-            return self._segments_images(raw_segments)
-        return self._segments_images(self._message_chain(event))
+            images.extend(self._segments_images(raw_segments))
+        images.extend(self._segments_images(self._message_chain(event)))
+        for text in self._raw_message_texts(event):
+            images.extend(self._images_from_cq(text))
+        return self._unique_strings(images)
+
+    def _raw_message_texts(self, event: AstrMessageEvent) -> list[str]:
+        result = []
+        raw = getattr(event.message_obj, "raw_message", None)
+        values = [
+            raw,
+            getattr(event.message_obj, "message_str", None),
+            getattr(event, "message_str", None),
+        ]
+        if isinstance(raw, dict):
+            values.extend(
+                self._first_mapping_value(raw, [key])
+                for key in ("raw_message", "rawMessage", "message", "message_str", "messageStr", "content")
+            )
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                result.append(value)
+        return self._unique_strings(result)
 
     def _append_mention(self, result: list[str], value: Any) -> None:
         if value is None:
@@ -274,6 +296,8 @@ class MessageMixin:
             text = self._segments_text(self._message_chain(event), include_at=include_at) or self._message_text(event)
 
         text = self._strip_cq_display(text)
+        if not text:
+            text = self._cq_media_summary(" ".join(self._raw_message_texts(event)))
         return self._strip_at_display(text, mentions) if mentions else text
 
     async def _poke_message(self, event: AstrMessageEvent, group_id: str, sender_name: str) -> dict[str, str] | None:
@@ -599,6 +623,10 @@ class MessageMixin:
                 )
                 if value:
                     texts.append(f"@{value}")
+            else:
+                summary = self._segment_media_summary(segment)
+                if summary:
+                    texts.append(summary)
         return "".join(texts).strip()
 
     def _segments_images(self, segments: list[Any]) -> list[str]:
@@ -606,12 +634,68 @@ class MessageMixin:
         for segment in segments:
             if self._is_reference_segment(segment):
                 continue
-            if self._segment_type(segment) != "image":
+            seg_type = self._segment_type(segment)
+            if seg_type not in {"image", "mface", "market_face", "marketface", "video", "shortvideo"}:
                 continue
-            value = self._segment_value(segment, ["url", "file", "path"])
+            names = [
+                "url",
+                "file",
+                "path",
+                "file_path",
+                "filePath",
+                "local_path",
+                "localPath",
+                "src",
+                "image",
+            ]
+            if seg_type in {"video", "shortvideo"}:
+                names = [
+                    "cover",
+                    "cover_url",
+                    "coverUrl",
+                    "thumbnail",
+                    "thumb",
+                    "preview",
+                    "poster",
+                    "image",
+                ]
+            value = self._segment_value(
+                segment,
+                names,
+            )
             if value:
                 urls.append(str(value))
+                continue
+            data = self._segment_data(segment)
+            base64_value = self._first_mapping_value(data, ["base64"]) if data else None
+            if base64_value:
+                text = str(base64_value).strip()
+                if text:
+                    urls.append(text if text.startswith(("base64://", "data:image/")) else f"base64://{text}")
         return self._unique_strings(urls)
+
+    def _segment_media_summary(self, segment: Any) -> str:
+        seg_type = self._segment_type(segment)
+        if seg_type in {"image"}:
+            return ""
+        if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
+            return "[表情]"
+        if seg_type in {"video", "shortvideo"}:
+            return "[视频]"
+        if seg_type in {"record", "voice", "audio"}:
+            return "[语音]"
+        if seg_type == "file":
+            name = self._segment_value(segment, ["name", "file_name", "fileName", "filename", "file"])
+            return f"[文件] {name}" if name else "[文件]"
+        if seg_type in {"json", "xml", "card", "share"}:
+            value = self._segment_value(
+                segment,
+                ["title", "desc", "description", "summary", "text", "content", "message"],
+            )
+            if value:
+                return self._strip_cq_display(str(value))
+            return "[卡片消息]"
+        return ""
 
     def _segment_type(self, segment: Any) -> str:
         if isinstance(segment, dict):
@@ -643,6 +727,24 @@ class MessageMixin:
         cleaned = re.sub(r"\[CQ:[^\]]+\]", " ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
+    def _cq_media_summary(self, text: str) -> str:
+        summaries = []
+        for seg_type in re.findall(r"\[CQ:([^,\]]+)", text or ""):
+            seg_type = seg_type.lower()
+            if seg_type in {"image"}:
+                continue
+            if seg_type in {"mface", "market_face", "face", "emoji"}:
+                summaries.append("[表情]")
+            elif seg_type in {"video", "shortvideo"}:
+                summaries.append("[视频]")
+            elif seg_type in {"record", "voice", "audio"}:
+                summaries.append("[语音]")
+            elif seg_type == "file":
+                summaries.append("[文件]")
+            elif seg_type in {"json", "xml", "card", "share"}:
+                summaries.append("[卡片消息]")
+        return " ".join(self._unique_strings(summaries))
+
     def _cq_at_display(self, match: re.Match[str]) -> str:
         data = self._parse_cq_attrs(match.group(1))
         value = (
@@ -657,11 +759,26 @@ class MessageMixin:
 
     def _images_from_cq(self, text: str) -> list[str]:
         images = []
-        for attrs in re.findall(r"\[CQ:image,([^\]]+)\]", text):
+        for match in re.finditer(r"\[CQ:(image|mface|market_face|video|shortvideo),([^\]]+)\]", text):
+            seg_type = match.group(1).lower()
+            attrs = match.group(2)
             data = self._parse_cq_attrs(attrs)
-            value = data.get("url") or data.get("file") or data.get("path")
+            names = (
+                ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"]
+                if seg_type in {"video", "shortvideo"}
+                else ["url", "file", "path", "file_path", "local_path", "src", "image"]
+            )
+            value = self._first_mapping_value(data, names)
             if value:
                 images.append(value)
+                continue
+            base64_value = data.get("base64")
+            if base64_value:
+                images.append(
+                    base64_value
+                    if base64_value.startswith(("base64://", "data:image/"))
+                    else f"base64://{base64_value}"
+                )
         return self._unique_strings(images)
 
     def _renderable_images(self, images: Any) -> list[str]:
