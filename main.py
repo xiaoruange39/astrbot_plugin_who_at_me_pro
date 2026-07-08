@@ -433,7 +433,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
         if not pending:
             return
 
-        pending.sort(key=lambda item: item.get("time", 0))
+        pending.sort(key=self._record_sort_key)
         target_name = await self._target_name(event, group_id, user_id)
         pending = await self._resolve_record_pokes(event, group_id, pending)
         reminder_text = self._format_template(
@@ -1242,27 +1242,40 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             if record.get("is_context"):
                 for idx, ctx in enumerate(record.get("before") or []):
                     msg = self._view_message(ctx, False, target_name)
+                    msg["sort_phase"] = 0
+                    msg["sort_index"] = idx
                     msg["sort_time"] = float(ctx.get("time", 0)) - 0.01 + idx * 0.001
                     messages.append(msg)
 
             main = self._view_message(record, True, target_name)
+            main["sort_phase"] = 1
+            main["sort_index"] = 0
             main["sort_time"] = float(record.get("time", 0))
             messages.append(main)
 
             if record.get("is_context"):
                 for idx, ctx in enumerate(record.get("after") or []):
                     msg = self._view_message(ctx, False, target_name)
+                    msg["sort_phase"] = 2
+                    msg["sort_index"] = idx
                     msg["sort_time"] = float(ctx.get("time", 0)) + 0.001 + idx * 0.001
                     messages.append(msg)
 
             blocks.append(
                 {
                     "at_time": record.get("time", 0),
+                    "at_order": self._record_order(record),
                     "msgs": self._dedupe_messages(messages),
                 }
             )
 
-        blocks.sort(key=lambda item: item["at_time"], reverse=reverse)
+        blocks.sort(
+            key=lambda item: (
+                self._numeric_order(item.get("at_time")) or 0,
+                item.get("at_order") if item.get("at_order") is not None else -1,
+            ),
+            reverse=reverse,
+        )
         return self._dedupe_block_context(blocks)
 
     def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str) -> dict[str, Any]:
@@ -1295,6 +1308,8 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             "member_title": member_title,
             "initial": self._initial(nickname),
             "avatar": avatar,
+            "message_id": str(data.get("message_id") or ""),
+            "order": self._record_order(data),
             "message": message,
             "has_message": bool(message.strip()),
             "message_html": html.escape(message).replace("\n", "<br>"),
@@ -1346,7 +1361,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             if key not in seen or msg.get("is_at"):
                 seen[key] = msg
         result = list(seen.values())
-        result.sort(key=lambda item: item.get("sort_time", 0))
+        result.sort(key=self._message_sort_key)
         return result
 
     def _dedupe_block_context(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1373,6 +1388,9 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
         return blocks
 
     def _message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
+        message_id = str(msg.get("message_id") or "")
+        if message_id:
+            return ("message_id", message_id)
         return (
             str(msg.get("user_id") or ""),
             self._record_time(msg),
@@ -1380,6 +1398,14 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             self._record_images_key(msg),
             self._record_quote_key(msg),
         )
+
+    def _message_sort_key(self, msg: dict[str, Any]) -> tuple[int, float, int, int]:
+        order = self._record_order(msg)
+        phase = self._numeric_order(msg.get("sort_phase"))
+        index = self._numeric_order(msg.get("sort_index"))
+        if order is not None:
+            return (0, float(order), phase or 0, index or 0)
+        return (1, float(msg.get("sort_time") or self._record_time(msg)), phase or 0, index or 0)
 
     def _chunk_blocks(self, blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         chunks: list[list[dict[str, Any]]] = []
@@ -1410,10 +1436,10 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
     ) -> list[dict[str, Any]]:
         max_pages = self._max_query_pages()
         if max_pages <= 0:
-            return sorted(records, key=self._record_time, reverse=reverse)
+            return sorted(records, key=self._record_sort_key, reverse=reverse)
 
         selected: list[dict[str, Any]] = []
-        latest_first = sorted(records, key=self._record_time, reverse=True)
+        latest_first = sorted(records, key=self._record_sort_key, reverse=True)
         for record in latest_first:
             trial = selected + [record]
             blocks = self._build_blocks(trial, target_name, reverse=True)
@@ -1423,7 +1449,7 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
                 break
             selected = trial
 
-        return sorted(selected, key=self._record_time, reverse=reverse)
+        return sorted(selected, key=self._record_sort_key, reverse=reverse)
 
     def _dedupe_records(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []
@@ -1463,7 +1489,8 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             "member_title": member_info.get("member_title") or "",
             "level": member_info.get("level") or "",
             "time": self._timestamp(event),
-            "message_id": str(getattr(event.message_obj, "message_id", "") or ""),
+            "message_id": self._event_message_id(event),
+            "order": self._event_order(event),
         }
         if poke:
             record["poke"] = poke
@@ -1489,6 +1516,8 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             "member_title": record.get("member_title") or "",
             "level": record.get("level") or "",
             "time": record["time"],
+            "message_id": record.get("message_id") or "",
+            "order": record.get("order"),
         }
         if record.get("poke"):
             context["poke"] = record["poke"]
@@ -2408,6 +2437,60 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
         text = str(value)
         return int(text) if text.isdigit() else value
 
+    def _numeric_order(self, value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip()
+        if not text or text.lower() in {"none", "null", "undefined"}:
+            return None
+        if text.lstrip("-").isdigit():
+            return int(text)
+        return None
+
+    def _event_message_id(self, event: AstrMessageEvent) -> str:
+        raw = getattr(event.message_obj, "raw_message", None)
+        for key in ("message_id", "messageId", "msg_id", "msgId", "id"):
+            value = getattr(event.message_obj, key, None)
+            if value is not None and str(value).strip():
+                return str(value)
+        if isinstance(raw, dict):
+            for key in ("message_id", "messageId", "msg_id", "msgId", "id"):
+                value = raw.get(key)
+                if value is not None and str(value).strip():
+                    return str(value)
+        return ""
+
+    def _event_order(self, event: AstrMessageEvent) -> int | None:
+        raw = getattr(event.message_obj, "raw_message", None)
+        keys = (
+            "message_seq",
+            "messageSeq",
+            "msg_seq",
+            "msgSeq",
+            "seq",
+            "real_id",
+            "realId",
+            "message_id",
+            "messageId",
+            "msg_id",
+            "msgId",
+            "id",
+        )
+        for key in keys:
+            order = self._numeric_order(getattr(event.message_obj, key, None))
+            if order is not None:
+                return order
+        if isinstance(raw, dict):
+            for key in keys:
+                order = self._numeric_order(raw.get(key))
+                if order is not None:
+                    return order
+        return self._numeric_order(self._event_message_id(event))
+
     def _timestamp(self, event: AstrMessageEvent) -> int:
         value = getattr(event.message_obj, "timestamp", None)
         try:
@@ -2547,6 +2630,31 @@ class WhoAtMePlugin(PageApiMixin, PageSettingsMixin, Star):
             return int(float(record.get("time") or 0))
         except (TypeError, ValueError):
             return 0
+
+    def _record_order(self, record: dict[str, Any]) -> int | None:
+        for key in (
+            "order",
+            "message_seq",
+            "messageSeq",
+            "msg_seq",
+            "msgSeq",
+            "seq",
+            "real_id",
+            "realId",
+            "message_id",
+            "messageId",
+            "msg_id",
+            "msgId",
+            "id",
+        ):
+            order = self._numeric_order(record.get(key))
+            if order is not None:
+                return order
+        return None
+
+    def _record_sort_key(self, record: dict[str, Any]) -> tuple[int, int]:
+        order = self._record_order(record)
+        return (self._record_time(record), order if order is not None else -1)
 
     def _config_value(self, *keys: str, default: Any = None) -> Any:
         value: Any = self.config
