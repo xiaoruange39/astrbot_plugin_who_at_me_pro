@@ -647,6 +647,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             images = [image for image in images if image not in media_covers]
         if media and self._is_media_summary_message(message):
             message = ""
+        at_after_image = bool(data.get("at_after_image") and images)
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
@@ -683,6 +684,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "time": data.get("time", 0),
             "time_text": self._time_text(data.get("time", 0)),
             "is_at": is_at,
+            "at_after_image": at_after_image,
             "target_name": target_name,
             "role_class": role if role in {"owner", "admin", "administrator"} else "",
             "role_text": role_text,
@@ -779,6 +781,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             base["has_message"] = bool(message.strip())
         base["images"] = self._unique_strings([*(base.get("images") or []), *(other.get("images") or [])])
         base["media"] = self._unique_media([*(base.get("media") or []), *(other.get("media") or [])])
+        base["at_after_image"] = bool(base.get("at_after_image") or other.get("at_after_image"))
 
         if not base.get("quote") and other.get("quote"):
             base["quote"] = other.get("quote")

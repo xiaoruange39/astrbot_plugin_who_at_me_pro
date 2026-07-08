@@ -47,6 +47,8 @@ class MessageMixin:
             "order": self._event_order(event),
             "received_order": self._event_received_order(event),
         }
+        if mentions:
+            record["at_after_image"] = self._mention_after_image(event, mentions)
         if poke:
             record["poke"] = poke
         if quote:
@@ -313,6 +315,46 @@ class MessageMixin:
             result.append(ALL_TARGET)
         else:
             result.append(value_str)
+
+    def _mention_after_image(self, event: AstrMessageEvent, mentions: list[str]) -> bool:
+        segments = self._raw_message_segments(event) or self._message_chain(event)
+        saw_image = False
+        for segment in segments:
+            if self._is_reference_segment(segment):
+                continue
+            seg_type = self._segment_type(segment)
+            if seg_type in {"image", "mface", "market_face", "marketface"}:
+                saw_image = True
+                continue
+            if self._is_target_at_segment(segment, mentions):
+                return saw_image
+
+        for text in self._raw_message_texts(event):
+            saw_image = False
+            for match in re.finditer(r"\[CQ:(image|mface|market_face|at),([^\]]+)\]", text or "", re.I):
+                seg_type = match.group(1).lower()
+                if seg_type in {"image", "mface", "market_face"}:
+                    saw_image = True
+                    continue
+                data = self._parse_cq_attrs(match.group(2))
+                value = data.get("qq") or data.get("user_id") or data.get("target") or data.get("id")
+                if self._mention_matches(value, mentions):
+                    return saw_image
+        return False
+
+    def _is_target_at_segment(self, segment: Any, mentions: list[str]) -> bool:
+        if self._segment_type(segment) != "at" and segment.__class__.__name__.lower() != "at" and not hasattr(segment, "qq"):
+            return False
+        value = self._segment_value(segment, ["qq", "user_id", "target", "id"])
+        return self._mention_matches(value, mentions)
+
+    def _mention_matches(self, value: Any, mentions: list[str]) -> bool:
+        if value is None:
+            return not mentions
+        text = str(value)
+        if text.lower() in {"all", "here", "@all"}:
+            text = ALL_TARGET
+        return not mentions or text in {str(item) for item in mentions}
 
     def _raw_message_segments(self, event: AstrMessageEvent) -> list[dict[str, Any]]:
         raw = getattr(event.message_obj, "raw_message", None)

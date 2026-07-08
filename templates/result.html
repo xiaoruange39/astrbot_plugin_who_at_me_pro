@@ -154,6 +154,9 @@
       font-weight: 800;
       overflow-wrap: anywhere;
     }
+    .msg-text.after-images {
+      margin-top: 8px;
+    }
     .at-text {
       color: #1e6fff;
       margin-right: 6px;
@@ -167,6 +170,9 @@
       border-radius: 8px;
       border: 1px solid #eee;
       object-fit: contain;
+    }
+    .msg-bubble.images-first .msg-img:first-of-type {
+      margin-top: 0;
     }
     .media-card {
       display: inline-flex;
@@ -426,7 +432,7 @@
                       <span class="nickname">{{ msg.nickname }}</span>
                     </div>
                     {% if msg.quote or msg.is_at or msg.has_message or msg.images %}
-                      <div class="msg-bubble {% if msg.is_at %}is-at{% endif %}">
+                      <div class="msg-bubble {% if msg.is_at %}is-at{% endif %} {% if msg.at_after_image %}images-first{% endif %}">
                         {% if msg.quote %}
                           <div class="quote-card">
                             <div class="quote-body">
@@ -447,7 +453,7 @@
                             </div>
                           </div>
                         {% endif %}
-                        {% if msg.is_at or msg.has_message %}
+                        {% if (msg.is_at or msg.has_message) and not msg.at_after_image %}
                           <div class="msg-text">
                             {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}
                             {% if msg.has_message %}{{ msg.message_html | safe }}{% endif %}
@@ -456,6 +462,12 @@
                         {% for image in msg.images %}
                           <img src="{{ image }}" class="msg-img" onerror="this.remove()" />
                         {% endfor %}
+                        {% if (msg.is_at or msg.has_message) and msg.at_after_image %}
+                          <div class="msg-text after-images">
+                            {% if msg.is_at %}<span class="at-text">@{{ target_name }}</span>{% endif %}
+                            {% if msg.has_message %}{{ msg.message_html | safe }}{% endif %}
+                          </div>
+                        {% endif %}
                       </div>
                     {% endif %}
                     {% for media in msg.media %}
