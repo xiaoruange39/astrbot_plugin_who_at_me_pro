@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -1320,10 +1321,12 @@ class MessageMixin:
                 cached_records += 1
             if record.get("media"):
                 media_records += 1
+        renderable_records = sum(1 for record in records if self._record_renderable_images(record))
         logger.info(
             "[who_at_me] query image diagnostic "
             f"group={group_id} target={target} records={len(records)} pages={page_count} "
-            f"with_images={image_records} with_cache={cached_records} with_media={media_records}"
+            f"with_images={image_records} with_cache={cached_records} with_media={media_records} "
+            f"renderable_images={renderable_records}"
         )
 
     def _segment_value(self, segment: Any, names: list[str]) -> Any:
@@ -1554,14 +1557,38 @@ class MessageMixin:
         if value.startswith("base64://"):
             return "data:image/png;base64," + value[len("base64://") :]
         if re.match(r"^file://", value, re.I):
-            return value
+            return self._file_uri_image_data(value)
         try:
             path = Path(value)
             if path.exists():
-                return path.resolve().as_uri()
+                return self._local_image_data_uri(path)
         except (OSError, ValueError):
             pass
         return ""
+
+    def _file_uri_image_data(self, value: str) -> str:
+        try:
+            from urllib.parse import unquote, urlparse
+
+            parsed = urlparse(value)
+            path_text = unquote(parsed.path or "")
+            if re.match(r"^/[A-Za-z]:/", path_text):
+                path_text = path_text[1:]
+            return self._local_image_data_uri(Path(path_text))
+        except Exception:
+            return ""
+
+    def _local_image_data_uri(self, path: Path) -> str:
+        try:
+            resolved = path.resolve()
+            if not resolved.exists() or not resolved.is_file():
+                return ""
+            suffix = resolved.suffix.lower()
+            mime = IMAGE_MIME_TYPES.get(suffix, "image/png")
+            data = base64.b64encode(resolved.read_bytes()).decode("ascii")
+            return f"data:{mime};base64,{data}"
+        except Exception:
+            return ""
 
     def _parse_cq_attrs(self, attrs: str) -> dict[str, str]:
         result = {}
