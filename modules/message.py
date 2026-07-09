@@ -1697,7 +1697,13 @@ class MessageMixin:
             return "poke:" + self._normalize_record_text(
                 f"{poke.get('actor') or ''}|{poke.get('action') or ''}|{poke.get('target') or ''}|{poke.get('suffix') or ''}"
             )
-        return self._normalize_record_text(record.get("message"))
+        message = str(record.get("message") or "")
+        targets: list[Any] = [record.get("target"), record.get("at"), record.get("AtQQ")]
+        if isinstance(record.get("at_targets"), list):
+            targets.extend(record["at_targets"])
+        if any(str(item or "").strip() for item in targets):
+            message = self._strip_at_display(message, targets)
+        return self._normalize_record_text(message)
 
     def _normalize_record_text(self, value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()

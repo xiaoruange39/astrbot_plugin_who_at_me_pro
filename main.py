@@ -808,22 +808,16 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
     def _timeline_loose_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
         if not (msg.get("is_at") or self._starts_with_at_display(msg.get("message"))):
             return ()
-        images = self._record_images_key(msg)
-        media = self._record_media_key(msg)
-        if not images and not media:
-            return ()
         message = self._strip_at_display(
             str(msg.get("message") or ""),
             [msg.get("target_name"), msg.get("target"), msg.get("at"), msg.get("AtQQ")],
         )
         return (
-            "visual_at",
+            "at_message",
             str(msg.get("user_id") or ""),
             self._record_time(msg),
             self._normalize_record_text(message),
             str(msg.get("target_name") or ""),
-            images,
-            media,
             self._record_quote_key(msg),
         )
 
