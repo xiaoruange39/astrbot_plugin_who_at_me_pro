@@ -346,12 +346,32 @@ class MessageMixin:
             text = str(image or "").strip()
             if not text:
                 continue
-            if self._renderable_image(text):
-                result.append(text)
+            renderable = self._renderable_image(text)
+            if renderable:
+                result.append(renderable)
+                continue
+            if not self._can_resolve_onebot_image_source(text):
                 continue
             resolved = await self._resolve_onebot_image(event, text)
-            result.append(resolved or text)
+            if resolved:
+                result.append(resolved)
         return self._unique_strings(result)
+
+    def _can_resolve_onebot_image_source(self, value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        if re.match(r"^https?://", text, re.I):
+            return self._is_allowed_remote_image_url(text)
+        if re.match(r"^file://", text, re.I):
+            return False
+        try:
+            path = Path(text)
+            if path.exists():
+                return self._is_allowed_local_image_path(path.resolve())
+        except (OSError, ValueError):
+            return False
+        return True
 
     async def _resolve_onebot_image(self, event: AstrMessageEvent, file_id: str) -> str:
         file_id = str(file_id or "").strip()
@@ -1505,17 +1525,19 @@ class MessageMixin:
         value = str(source or "").strip()
         if not value:
             return ""
-        if re.match(r"^(https?|file)://", value, re.I):
-            return value
-        if value.startswith(("base64://", "data:")):
-            return value
+        if re.match(r"^https?://", value, re.I):
+            return value if self._is_allowed_remote_image_url(value) else ""
+        if re.match(r"^file://", value, re.I):
+            return self._file_uri_media_source(value)
         try:
             path = Path(value)
             if path.exists():
-                return path.resolve().as_uri()
+                resolved = path.resolve()
+                if self._is_allowed_local_image_path(resolved):
+                    return resolved.as_uri()
         except (OSError, ValueError):
             pass
-        return value
+        return ""
 
     def _renderable_image(self, image: Any) -> str:
         if isinstance(image, dict):
@@ -1550,7 +1572,7 @@ class MessageMixin:
         if not value:
             return ""
         if re.match(r"^https?://", value, re.I):
-            return value
+            return value if self._is_allowed_remote_image_url(value) else ""
         if re.match(r"^data:image/", value, re.I):
             return value
         if value.startswith("base64://"):
@@ -1580,12 +1602,27 @@ class MessageMixin:
     def _local_image_data_uri(self, path: Path) -> str:
         try:
             resolved = path.resolve()
-            if not resolved.exists() or not resolved.is_file():
+            if not resolved.exists() or not resolved.is_file() or not self._is_allowed_local_image_path(resolved):
                 return ""
             suffix = resolved.suffix.lower()
             mime = IMAGE_MIME_TYPES.get(suffix, "image/png")
             data = base64.b64encode(resolved.read_bytes()).decode("ascii")
             return f"data:{mime};base64,{data}"
+        except Exception:
+            return ""
+
+    def _file_uri_media_source(self, value: str) -> str:
+        try:
+            from urllib.parse import unquote, urlparse
+
+            parsed = urlparse(value)
+            path_text = unquote(parsed.path or "")
+            if re.match(r"^/[A-Za-z]:/", path_text):
+                path_text = path_text[1:]
+            resolved = Path(path_text).resolve()
+            if not resolved.exists() or not resolved.is_file() or not self._is_allowed_local_image_path(resolved):
+                return ""
+            return resolved.as_uri()
         except Exception:
             return ""
 

@@ -20,6 +20,7 @@ REMINDER_CONTEXT_SET_PATTERN = re.compile(r"^设置提醒上下文\s*(\d+)\s*[,�
 ALL_TARGET = "__all__"
 INDEX_KEY = "records:index"
 CONTEXT_INDEX_KEY = "context:index"
+REMINDER_PENDING_INDEX_KEY = "reminder:pending:index"
 MAX_RECORDS_PER_TARGET = 300
 RECENT_IMAGE_CACHE_RECORDS = 0
 MAX_CONTEXT_MESSAGES = 5

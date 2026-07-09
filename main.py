@@ -278,9 +278,25 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         )
 
     async def _delete_pending_reminders(self, group_id: str, user_id: str) -> None:
-        key = self._reminder_pending_key(group_id, user_id)
+        await self._delete_pending_key(self._reminder_pending_key(group_id, user_id))
+
+    async def _delete_record_key(self, key: str) -> bool:
         async with self._kv_lock(key):
+            records = await self.get_kv_data(key, [])
+            has_records = bool(records) if isinstance(records, list) else False
+            self._drop_records_image_cache(records, delete_files=True)
             await self.delete_kv_data(key)
+        await self._forget_index_key(key)
+        return has_records
+
+    async def _delete_pending_key(self, key: str) -> bool:
+        async with self._kv_lock(key):
+            pending = await self.get_kv_data(key, [])
+            has_pending = bool(pending) if isinstance(pending, list) else False
+            self._drop_records_image_cache(pending, delete_files=True)
+            await self.delete_kv_data(key)
+        await self._forget_pending_key(key)
+        return has_pending
 
     async def _restore_pending_reminders(self, group_id: str, user_id: str, records: list[dict[str, Any]]) -> None:
         if not records:
@@ -291,6 +307,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             merged = self._dedupe_records([*current, *records])
             merged.sort(key=self._record_sort_key)
             await self.put_kv_data(key, merged[-self._max_pending_reminders():])
+        await self._remember_pending_key(key)
 
     async def _take_ready_pending_reminders(
         self,
@@ -310,8 +327,11 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 for record in pending
                 if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds
             ]
+            if not ready:
+                self._drop_records_image_cache(pending, delete_files=True)
             await self.delete_kv_data(key)
-            return ready, pending if ready else []
+        await self._forget_pending_key(key)
+        return ready, pending if ready else []
 
     async def _handle_recall_event(self, event: AstrMessageEvent, group_id: str) -> bool:
         message_id = self._recall_message_id(event)
@@ -492,15 +512,20 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         pending_record = await self._cache_record_images(pending_record)
 
         key = self._reminder_pending_key(group_id, target)
+        duplicate = False
         async with self._kv_lock(key):
             pending = await self._get_pending_reminders(group_id, target)
             if any(self._records_are_duplicate(item, pending_record) for item in pending):
-                return False
+                duplicate = True
+            else:
+                pending.append(pending_record)
+                pending = pending[-self._max_pending_reminders():]
+                await self.put_kv_data(key, pending)
 
-            pending.append(pending_record)
-            pending = pending[-self._max_pending_reminders():]
-            await self.put_kv_data(key, pending)
-        return True
+        if duplicate:
+            self._drop_record_image_cache(pending_record, delete_files=True)
+        await self._remember_pending_key(key)
+        return not duplicate
 
     async def _deliver_pending_reminders(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
         if not await self._reminder_group_enabled(event, group_id):
@@ -564,6 +589,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     if not await self._try_send(event, event.image_result(image_path)):
                         raise RuntimeError(f"发送提醒图片失败: {image_path}")
             sent = True
+            self._drop_records_image_cache(original_pending, delete_files=True)
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
             if not sent:
@@ -647,28 +673,47 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return []
 
     async def _clear_self(self, event: AstrMessageEvent, group_id: str) -> Any:
-        key = self._record_key(group_id, self._sender_id(event))
-        records = await self.get_kv_data(key, [])
-        if not records:
+        sender_id = self._sender_id(event)
+        key = self._record_key(group_id, sender_id)
+        pending_key = self._reminder_pending_key(group_id, sender_id)
+        removed_records = await self._delete_record_key(key)
+        removed_pending = await self._delete_pending_key(pending_key)
+        if not removed_records and not removed_pending:
             return event.plain_result("目前数据库没有你的at数据,无法清除")
 
-        await self.delete_kv_data(key)
-        await self._forget_index_key(key)
         return event.plain_result("已成功清除")
 
     async def _clear_all(self, event: AstrMessageEvent) -> Any:
         keys = await self.get_kv_data(INDEX_KEY, [])
+        if not isinstance(keys, list):
+            keys = []
+        pending_keys = set(await self._pending_index_keys())
         for key in keys:
-            await self.delete_kv_data(key)
+            if not isinstance(key, str):
+                continue
+            await self._delete_record_key(key)
+            if key.startswith("records:"):
+                body = key[len("records:") :]
+                if ":" in body:
+                    group_id, target = body.split(":", 1)
+                    pending_keys.add(self._reminder_pending_key(group_id, target))
         await self.delete_kv_data(INDEX_KEY)
 
         context_keys = await self.get_kv_data(CONTEXT_INDEX_KEY, [])
+        if not isinstance(context_keys, list):
+            context_keys = []
         for key in context_keys:
-            await self.delete_kv_data(key)
+            if isinstance(key, str):
+                await self.delete_kv_data(key)
         await self.delete_kv_data(CONTEXT_INDEX_KEY)
+
+        for key in pending_keys:
+            await self._delete_pending_key(key)
+        await self.delete_kv_data(REMINDER_PENDING_INDEX_KEY)
 
         self.before_cache.clear()
         self.after_tasks.clear()
+        self.reminder_after_tasks.clear()
         return event.plain_result("已成功清除全部艾特数据")
 
     def _build_blocks(

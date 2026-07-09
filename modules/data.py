@@ -434,6 +434,13 @@ class DataMixin:
                 if isinstance(item, dict):
                     self._drop_record_image_cache(item, delete_files=delete_files)
 
+    def _drop_records_image_cache(self, records: Any, delete_files: bool) -> None:
+        if not isinstance(records, list):
+            return
+        for record in records:
+            if isinstance(record, dict):
+                self._drop_record_image_cache(record, delete_files=delete_files)
+
     def _delete_image_cache_entries(self, entries: Any) -> None:
         if not isinstance(entries, list):
             return
@@ -852,6 +859,31 @@ class DataMixin:
             if key in keys:
                 keys.remove(key)
                 await self.put_kv_data(INDEX_KEY, keys)
+
+    async def _remember_pending_key(self, key: str) -> None:
+        async with self._kv_lock(REMINDER_PENDING_INDEX_KEY):
+            keys = await self.get_kv_data(REMINDER_PENDING_INDEX_KEY, [])
+            if not isinstance(keys, list):
+                keys = []
+            if key not in keys:
+                keys.append(key)
+                await self.put_kv_data(REMINDER_PENDING_INDEX_KEY, keys)
+
+    async def _forget_pending_key(self, key: str) -> None:
+        async with self._kv_lock(REMINDER_PENDING_INDEX_KEY):
+            keys = await self.get_kv_data(REMINDER_PENDING_INDEX_KEY, [])
+            if not isinstance(keys, list):
+                return
+            if key in keys:
+                keys.remove(key)
+                await self.put_kv_data(REMINDER_PENDING_INDEX_KEY, keys)
+
+    async def _pending_index_keys(self) -> list[str]:
+        async with self._kv_lock(REMINDER_PENDING_INDEX_KEY):
+            keys = await self.get_kv_data(REMINDER_PENDING_INDEX_KEY, [])
+        if not isinstance(keys, list):
+            return []
+        return [key for key in keys if isinstance(key, str)]
 
     async def _target_name(self, event: AstrMessageEvent, group_id: str, target: str) -> str:
         if target == self._sender_id(event):
