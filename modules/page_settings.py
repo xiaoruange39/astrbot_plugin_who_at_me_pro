@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -53,11 +52,16 @@ class PageSettingsMixin:
 
     def _plugin_data_dir(self) -> Path:
         try:
-            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+            from astrbot.api.star import StarTools
 
-            return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me"
+            return Path(StarTools.get_data_dir("astrbot_plugin_who_at_me"))
         except Exception:
-            return Path(tempfile.gettempdir()) / "astrbot_plugin_who_at_me"
+            try:
+                from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+                return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me"
+            except Exception:
+                return Path.cwd() / "data" / "astrbot_plugin_who_at_me"
 
     def _page_settings_file(self) -> Path:
         return self._plugin_data_dir() / "page_settings.json"
@@ -155,7 +159,7 @@ class PageSettingsMixin:
             return bool(host and origin.split("://", 1)[-1].split("/", 1)[0] == host)
         if referer:
             return bool(host and referer.split("://", 1)[-1].split("/", 1)[0] == host)
-        return not sec_fetch_site or sec_fetch_site == "none"
+        return False
 
     def _sanitize_font_filename(self, filename: str) -> str:
         name = Path(str(filename or "")).name.strip()

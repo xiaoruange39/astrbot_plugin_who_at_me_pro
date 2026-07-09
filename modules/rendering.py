@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -393,12 +392,20 @@ class RenderingMixin:
         return render_dir / f"who_at_me_{int(time.time())}_{uuid.uuid4().hex}{suffix}"
 
     def _render_dir(self) -> Path:
+        plugin_dir = getattr(self, "_plugin_data_dir", None)
+        if callable(plugin_dir):
+            return Path(plugin_dir()) / "renders"
         try:
-            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+            from astrbot.api.star import StarTools
 
-            return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me" / "renders"
+            return Path(StarTools.get_data_dir("astrbot_plugin_who_at_me")) / "renders"
         except Exception:
-            return Path(tempfile.gettempdir()) / "astrbot_plugin_who_at_me" / "renders"
+            try:
+                from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+                return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me" / "renders"
+            except Exception:
+                return Path.cwd() / "data" / "astrbot_plugin_who_at_me" / "renders"
 
     def _cleanup_old_renders(self) -> None:
         render_dir = self._render_dir()

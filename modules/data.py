@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import re
+import socket
 import time
 import uuid
 from datetime import datetime
@@ -21,32 +23,44 @@ except ImportError:
 
 
 class DataMixin:
+    def _kv_lock(self, key: str) -> asyncio.Lock:
+        locks = getattr(self, "_kv_locks", None)
+        if not isinstance(locks, dict):
+            locks = {}
+            setattr(self, "_kv_locks", locks)
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
+
     async def _append_record(self, group_id: str, target: str, record: dict[str, Any]) -> None:
         key = self._record_key(group_id, target)
-        records = await self.get_kv_data(key, [])
-        if not isinstance(records, list):
-            records = []
         cached_record = await self._cache_record_images(dict(record))
-        start = max(0, len(records) - 10)
-        for index in range(start, len(records)):
-            item = records[index]
-            if not isinstance(item, dict) or not self._records_are_duplicate(item, cached_record):
-                continue
-            records[index] = self._merge_duplicate_record(item, cached_record)
+        async with self._kv_lock(key):
+            records = await self.get_kv_data(key, [])
+            if not isinstance(records, list):
+                records = []
+            start = max(0, len(records) - 10)
+            for index in range(start, len(records)):
+                item = records[index]
+                if not isinstance(item, dict) or not self._records_are_duplicate(item, cached_record):
+                    continue
+                records[index] = self._merge_duplicate_record(item, cached_record)
+                self._prune_record_image_caches(records)
+                await self.put_kv_data(key, records)
+                await self._remember_index_key(key)
+                return
+            records.append(cached_record)
+            max_records = self._max_records_per_target()
+            dropped_records = records[:-max_records]
+            records = records[-max_records:]
+            for dropped in dropped_records:
+                if isinstance(dropped, dict):
+                    self._drop_record_image_cache(dropped, delete_files=True)
             self._prune_record_image_caches(records)
             await self.put_kv_data(key, records)
             await self._remember_index_key(key)
-            return
-        records.append(cached_record)
-        max_records = self._max_records_per_target()
-        dropped_records = records[:-max_records]
-        records = records[-max_records:]
-        for dropped in dropped_records:
-            if isinstance(dropped, dict):
-                self._drop_record_image_cache(dropped, delete_files=True)
-        self._prune_record_image_caches(records)
-        await self.put_kv_data(key, records)
-        await self._remember_index_key(key)
 
     async def _cache_record_images(self, record: dict[str, Any]) -> dict[str, Any]:
         if self._recent_image_cache_records() <= 0:
@@ -221,6 +235,8 @@ class DataMixin:
         if not value:
             return b"", ""
         if re.match(r"^https?://", value, re.I):
+            if not self._is_allowed_remote_image_url(value):
+                return b"", ""
             request = Request(value, headers={"User-Agent": "Mozilla/5.0"})
             with urlopen(request, timeout=10) as response:
                 image_type = str(response.headers.get("Content-Type") or "")
@@ -236,13 +252,70 @@ class DataMixin:
             path_text = unquote(parsed.path or "")
             if re.match(r"^/[A-Za-z]:/", path_text):
                 path_text = path_text[1:]
-            path = Path(path_text)
-            return path.read_bytes(), path.suffix
+            return self._read_local_image_path(Path(path_text))
 
         path = Path(value)
         if path.exists():
-            return path.read_bytes(), path.suffix
+            return self._read_local_image_path(path)
         return b"", ""
+
+    def _is_allowed_remote_image_url(self, value: str) -> bool:
+        parsed = urlparse(value)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        host_text = host.lower().strip("[]")
+        if host_text in {"localhost", "localhost.localdomain"} or host_text.endswith(".local"):
+            return False
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError:
+            return False
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except ValueError:
+                return False
+            if not ip.is_global:
+                return False
+        return True
+
+    def _read_local_image_path(self, path: Path) -> tuple[bytes, str]:
+        try:
+            resolved = path.expanduser().resolve()
+            if not resolved.is_file() or not self._is_allowed_local_image_path(resolved):
+                return b"", ""
+            return resolved.read_bytes(), resolved.suffix
+        except OSError:
+            return b"", ""
+
+    def _is_allowed_local_image_path(self, path: Path) -> bool:
+        for root in self._allowed_local_image_roots():
+            if path == root or root in path.parents:
+                return True
+        return False
+
+    def _allowed_local_image_roots(self) -> list[Path]:
+        roots: list[Path] = [self._message_image_cache_dir()]
+        plugin_dir = getattr(self, "_plugin_data_dir", None)
+        if callable(plugin_dir):
+            roots.append(Path(plugin_dir()))
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            roots.append(Path(get_astrbot_data_path()) / "temp")
+        except Exception:
+            pass
+
+        allowed = []
+        for root in roots:
+            try:
+                allowed.append(Path(root).expanduser().resolve())
+            except OSError:
+                continue
+        return allowed
 
     def _read_limited_bytes(self, response: Any, max_bytes: int = 20 * 1024 * 1024) -> bytes:
         chunks = []
@@ -281,14 +354,20 @@ class DataMixin:
         return cache_dir / f"msg_{int(time.time())}_{uuid.uuid4().hex}{suffix}"
 
     def _message_image_cache_dir(self) -> Path:
+        plugin_dir = getattr(self, "_plugin_data_dir", None)
+        if callable(plugin_dir):
+            return Path(plugin_dir()) / "message_images"
         try:
-            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+            from astrbot.api.star import StarTools
 
-            return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me" / "message_images"
+            return Path(StarTools.get_data_dir("astrbot_plugin_who_at_me")) / "message_images"
         except Exception:
-            import tempfile
+            try:
+                from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-            return Path(tempfile.gettempdir()) / "astrbot_plugin_who_at_me" / "message_images"
+                return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me" / "message_images"
+            except Exception:
+                return Path.cwd() / "data" / "astrbot_plugin_who_at_me" / "message_images"
 
     def _prune_record_image_caches(self, records: list[dict[str, Any]]) -> None:
         keep_count = self._recent_image_cache_records()
@@ -399,7 +478,8 @@ class DataMixin:
 
         removed = 0
         touched_targets: set[str] = set()
-        keys = await self.get_kv_data(INDEX_KEY, [])
+        async with self._kv_lock(INDEX_KEY):
+            keys = await self.get_kv_data(INDEX_KEY, [])
         if not isinstance(keys, list):
             keys = []
         prefix = f"records:{group_id}:"
@@ -407,30 +487,32 @@ class DataMixin:
         for key in list(keys):
             if not isinstance(key, str) or not key.startswith(prefix):
                 continue
-            records = await self.get_kv_data(key, [])
-            if not isinstance(records, list):
-                continue
-            next_records, count = self._remove_recalled_from_records(records, message_id)
-            if not count:
-                continue
-            target = key[len(prefix) :]
-            touched_targets.add(target)
-            removed += count
-            await self.put_kv_data(key, next_records)
+            async with self._kv_lock(key):
+                records = await self.get_kv_data(key, [])
+                if not isinstance(records, list):
+                    continue
+                next_records, count = self._remove_recalled_from_records(records, message_id)
+                if not count:
+                    continue
+                target = key[len(prefix) :]
+                touched_targets.add(target)
+                removed += count
+                await self.put_kv_data(key, next_records)
 
         for target in touched_targets:
             pending_key = self._reminder_pending_key(group_id, target)
-            pending = await self.get_kv_data(pending_key, [])
-            if not isinstance(pending, list):
-                continue
-            next_pending, count = self._remove_recalled_from_records(pending, message_id)
-            if not count:
-                continue
-            removed += count
-            if next_pending:
-                await self.put_kv_data(pending_key, next_pending)
-            else:
-                await self.delete_kv_data(pending_key)
+            async with self._kv_lock(pending_key):
+                pending = await self.get_kv_data(pending_key, [])
+                if not isinstance(pending, list):
+                    continue
+                next_pending, count = self._remove_recalled_from_records(pending, message_id)
+                if not count:
+                    continue
+                removed += count
+                if next_pending:
+                    await self.put_kv_data(pending_key, next_pending)
+                else:
+                    await self.delete_kv_data(pending_key)
 
         cache = self.before_cache.get(group_id, []) if hasattr(self, "before_cache") else []
         if isinstance(cache, list):
@@ -745,24 +827,31 @@ class DataMixin:
         key = self._context_key(group_id)
         if enabled:
             await self.put_kv_data(key, True)
-            context_keys = await self.get_kv_data(CONTEXT_INDEX_KEY, [])
-            if key not in context_keys:
-                context_keys.append(key)
-                await self.put_kv_data(CONTEXT_INDEX_KEY, context_keys)
+            async with self._kv_lock(CONTEXT_INDEX_KEY):
+                context_keys = await self.get_kv_data(CONTEXT_INDEX_KEY, [])
+                if key not in context_keys:
+                    context_keys.append(key)
+                    await self.put_kv_data(CONTEXT_INDEX_KEY, context_keys)
         else:
             await self.delete_kv_data(key)
 
     async def _remember_index_key(self, key: str) -> None:
-        keys = await self.get_kv_data(INDEX_KEY, [])
-        if key not in keys:
-            keys.append(key)
-            await self.put_kv_data(INDEX_KEY, keys)
+        async with self._kv_lock(INDEX_KEY):
+            keys = await self.get_kv_data(INDEX_KEY, [])
+            if not isinstance(keys, list):
+                keys = []
+            if key not in keys:
+                keys.append(key)
+                await self.put_kv_data(INDEX_KEY, keys)
 
     async def _forget_index_key(self, key: str) -> None:
-        keys = await self.get_kv_data(INDEX_KEY, [])
-        if key in keys:
-            keys.remove(key)
-            await self.put_kv_data(INDEX_KEY, keys)
+        async with self._kv_lock(INDEX_KEY):
+            keys = await self.get_kv_data(INDEX_KEY, [])
+            if not isinstance(keys, list):
+                return
+            if key in keys:
+                keys.remove(key)
+                await self.put_kv_data(INDEX_KEY, keys)
 
     async def _target_name(self, event: AstrMessageEvent, group_id: str, target: str) -> str:
         if target == self._sender_id(event):

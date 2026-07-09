@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 import time
@@ -45,6 +46,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._font_css_cache_key: tuple[str, int, int] | None = None
         self._font_css_cache_value = ""
         self._receive_order = 0
+        self._kv_locks: dict[str, asyncio.Lock] = {}
         self.started_at = int(time.time())
 
     def _register_page_apis(self, context: Context) -> None:
@@ -128,7 +130,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         sender_id = self._sender_id(event)
         self_id = self._self_id(event)
         if sender_id and self_id and sender_id == self_id:
-            await self.delete_kv_data(self._reminder_pending_key(group_id, self_id))
+            await self._delete_pending_reminders(group_id, self_id)
             return
         if sender_id:
             await self._remember_sender_member(event, group_id, sender_id)
@@ -138,7 +140,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             self._stop_event(event)
             self._disable_llm(event)
             if sender_id:
-                await self.delete_kv_data(self._reminder_pending_key(group_id, sender_id))
+                await self._delete_pending_reminders(group_id, sender_id)
                 await self._record_context_message(event, group_id, mentions, append_to_cache=True)
                 await self._update_last_active(group_id, sender_id, self._timestamp(event))
             command_result = await self._handle_command(event, group_id, text, mentions)
@@ -163,12 +165,12 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
         self_id = self._self_id(event)
         if self_id and sender_id == self_id:
-            await self.delete_kv_data(self._reminder_pending_key(group_id, self_id))
+            await self._delete_pending_reminders(group_id, self_id)
             return
 
         text = self._normalize_command_text(self._message_text(event))
         if self._is_plugin_command(text):
-            await self.delete_kv_data(self._reminder_pending_key(group_id, sender_id))
+            await self._delete_pending_reminders(group_id, sender_id)
             await self._update_last_active(group_id, sender_id, self._timestamp(event))
             return
 
@@ -274,6 +276,42 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 REMINDER_CONTEXT_SET_PATTERN,
             )
         )
+
+    async def _delete_pending_reminders(self, group_id: str, user_id: str) -> None:
+        key = self._reminder_pending_key(group_id, user_id)
+        async with self._kv_lock(key):
+            await self.delete_kv_data(key)
+
+    async def _restore_pending_reminders(self, group_id: str, user_id: str, records: list[dict[str, Any]]) -> None:
+        if not records:
+            return
+        key = self._reminder_pending_key(group_id, user_id)
+        async with self._kv_lock(key):
+            current = await self._get_pending_reminders(group_id, user_id)
+            merged = self._dedupe_records([*current, *records])
+            merged.sort(key=self._record_sort_key)
+            await self.put_kv_data(key, merged[-self._max_pending_reminders():])
+
+    async def _take_ready_pending_reminders(
+        self,
+        group_id: str,
+        user_id: str,
+        now_time: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        key = self._reminder_pending_key(group_id, user_id)
+        async with self._kv_lock(key):
+            pending = await self._get_pending_reminders(group_id, user_id)
+            if not pending:
+                return [], []
+            pending = self._dedupe_records(pending)
+            away_seconds = self._reminder_away_seconds()
+            ready = [
+                record
+                for record in pending
+                if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds
+            ]
+            await self.delete_kv_data(key)
+            return ready, pending if ready else []
 
     async def _handle_recall_event(self, event: AstrMessageEvent, group_id: str) -> bool:
         message_id = self._recall_message_id(event)
@@ -389,15 +427,19 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         tasks = self.after_tasks.get(group_id, [])
         for idx in range(len(tasks) - 1, -1, -1):
             task = tasks[idx]
-            records = await self._get_records(group_id, task["target"])
-            changed = False
-            for record in records:
-                if record.get("time") == task["time"]:
-                    record.setdefault("after", []).append(current)
-                    changed = True
-                    break
-            if changed:
-                await self.put_kv_data(self._record_key(group_id, task["target"]), records)
+            key = self._record_key(group_id, task["target"])
+            async with self._kv_lock(key):
+                records = await self.get_kv_data(key, [])
+                if not isinstance(records, list):
+                    records = []
+                changed = False
+                for record in records:
+                    if record.get("time") == task["time"]:
+                        record.setdefault("after", []).append(current)
+                        changed = True
+                        break
+                if changed:
+                    await self.put_kv_data(key, records)
 
             task["count"] += 1
             if task["count"] >= self._query_context_max_messages():
@@ -407,15 +449,17 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         tasks = self.reminder_after_tasks.get(group_id, [])
         for idx in range(len(tasks) - 1, -1, -1):
             task = tasks[idx]
-            pending = await self._get_pending_reminders(group_id, task["target"])
-            changed = False
-            for record in pending:
-                if record.get("time") == task["time"]:
-                    record.setdefault("after", []).append(current)
-                    changed = True
-                    break
-            if changed:
-                await self.put_kv_data(self._reminder_pending_key(group_id, task["target"]), pending)
+            key = self._reminder_pending_key(group_id, task["target"])
+            async with self._kv_lock(key):
+                pending = await self._get_pending_reminders(group_id, task["target"])
+                changed = False
+                for record in pending:
+                    if record.get("time") == task["time"]:
+                        record.setdefault("after", []).append(current)
+                        changed = True
+                        break
+                if changed:
+                    await self.put_kv_data(key, pending)
 
             task["count"] += 1
             if task["count"] >= int(task.get("limit", 0)):
@@ -448,36 +492,28 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         pending_record = await self._cache_record_images(pending_record)
 
         key = self._reminder_pending_key(group_id, target)
-        pending = await self._get_pending_reminders(group_id, target)
-        if any(self._records_are_duplicate(item, pending_record) for item in pending):
-            return False
+        async with self._kv_lock(key):
+            pending = await self._get_pending_reminders(group_id, target)
+            if any(self._records_are_duplicate(item, pending_record) for item in pending):
+                return False
 
-        pending.append(pending_record)
-        pending = pending[-self._max_pending_reminders():]
-        await self.put_kv_data(key, pending)
+            pending.append(pending_record)
+            pending = pending[-self._max_pending_reminders():]
+            await self.put_kv_data(key, pending)
         return True
 
     async def _deliver_pending_reminders(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
         if not await self._reminder_group_enabled(event, group_id):
             return
         if not await self._reminder_user_enabled(group_id, user_id):
-            await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
+            await self._delete_pending_reminders(group_id, user_id)
             return
 
-        pending = await self._get_pending_reminders(group_id, user_id)
-        if not pending:
-            return
-
-        now_time = self._timestamp(event)
-        away_seconds = self._reminder_away_seconds()
-        pending = self._dedupe_records(pending)
-        ready = []
-        for record in pending:
-            if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds:
-                ready.append(record)
-
-        await self.delete_kv_data(self._reminder_pending_key(group_id, user_id))
-        pending = ready
+        pending, original_pending = await self._take_ready_pending_reminders(
+            group_id,
+            user_id,
+            self._timestamp(event),
+        )
         if not pending:
             return
 
@@ -497,6 +533,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_reminder_pages())
         image_paths: list[str] = []
+        sent = False
         try:
             for idx, chunk in enumerate(chunks, start=1):
                 image_path = await self._render_query_image(
@@ -517,7 +554,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
             if reminder_text:
                 if not await self._try_send_text_images(event, reminder_text, image_paths):
-                    await self._try_send(event, event.plain_result(reminder_text))
+                    if not await self._try_send(event, event.plain_result(reminder_text)):
+                        raise RuntimeError("failed to send reminder text")
                     for image_path in image_paths:
                         if not await self._try_send(event, event.image_result(image_path)):
                             raise RuntimeError(f"发送提醒图片失败: {image_path}")
@@ -525,8 +563,11 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 for image_path in image_paths:
                     if not await self._try_send(event, event.image_result(image_path)):
                         raise RuntimeError(f"发送提醒图片失败: {image_path}")
+            sent = True
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
+            if not sent:
+                await self._restore_pending_reminders(group_id, user_id, original_pending)
             if reminder_text and not image_paths:
                 await self._try_send(event, event.plain_result(reminder_text))
             await self._try_send(event, event.plain_result(self._plain_summary(pending, target_name)))
