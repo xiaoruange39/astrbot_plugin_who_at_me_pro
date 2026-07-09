@@ -1455,26 +1455,16 @@ class MessageMixin:
         return self._unique_strings(result)
 
     def _record_renderable_images(self, data: dict[str, Any]) -> list[str]:
-        candidates: list[Any] = []
-        cached_sources = set()
         cache = data.get("image_cache")
         if isinstance(cache, list):
-            for item in cache:
-                candidates.append(item)
-                if isinstance(item, dict):
-                    source = str(item.get("source") or "").strip()
-                    if source:
-                        cached_sources.add(source)
+            cached_images = self._renderable_images(cache)
+            if cached_images:
+                return cached_images
 
         images = data.get("images") or data.get("image") or []
         if isinstance(images, str):
             images = [images]
-        if isinstance(images, list):
-            for image in images:
-                source = str(image or "").strip()
-                if source and source not in cached_sources:
-                    candidates.append(image)
-        return self._renderable_images(candidates)
+        return self._renderable_images(images)
 
     def _record_renderable_media(self, data: dict[str, Any]) -> list[dict[str, str]]:
         raw_media = data.get("media") or []
