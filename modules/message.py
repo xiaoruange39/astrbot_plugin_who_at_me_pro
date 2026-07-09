@@ -437,7 +437,7 @@ class MessageMixin:
         return False
 
     def _mention_after_image(self, event: AstrMessageEvent, mentions: list[str]) -> bool:
-        segments = self._raw_message_segments(event) or self._message_chain(event)
+        segments = self._layout_segments(event)
         saw_image = False
         for segment in segments:
             if self._is_reference_segment(segment):
@@ -465,7 +465,7 @@ class MessageMixin:
         return False
 
     def _message_after_images(self, event: AstrMessageEvent, mentions: list[str]) -> str:
-        segments = self._raw_message_segments(event) or self._message_chain(event)
+        segments = self._layout_segments(event)
         if segments:
             text = self._segments_text_after_images(segments, mentions)
             if text:
@@ -524,6 +524,12 @@ class MessageMixin:
         if saw_image_after_at and cursor < len(text or ""):
             parts.append((text or "")[cursor:])
         return self._strip_cq_display("".join(parts))
+
+    def _layout_segments(self, event: AstrMessageEvent) -> list[Any]:
+        chain = self._message_chain(event)
+        if any(self._is_image_segment_type(self._segment_type(segment)) for segment in chain):
+            return chain
+        return self._raw_message_segments(event) or chain
 
     def _is_target_at_segment(self, segment: Any, mentions: list[str]) -> bool:
         if self._segment_type(segment) != "at" and segment.__class__.__name__.lower() != "at" and not hasattr(segment, "qq"):
@@ -1114,6 +1120,9 @@ class MessageMixin:
             value = segment.get("type") or segment.get("seg_type") or ""
         else:
             value = getattr(segment, "type", "") or getattr(segment, "seg_type", "")
+            if not value:
+                data = self._object_mapping(segment)
+                value = data.get("type") or data.get("seg_type") or ""
         return self._normalize_segment_type(value) or self._normalize_segment_type(segment.__class__.__name__) or segment.__class__.__name__.lower()
 
     def _normalize_segment_type(self, value: Any) -> str:
@@ -1138,7 +1147,28 @@ class MessageMixin:
             data = segment.get("data")
             return data if isinstance(data, dict) else segment
         data = getattr(segment, "data", None)
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            return data
+        return self._object_mapping(segment)
+
+    def _object_mapping(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        for name in ("model_dump", "dict", "to_dict", "as_dict"):
+            method = getattr(value, name, None)
+            if not callable(method):
+                continue
+            try:
+                data = method()
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                return data
+
+        data = getattr(value, "__dict__", None)
+        if isinstance(data, dict):
+            return {key: item for key, item in data.items() if not str(key).startswith("_")}
+        return {}
 
     def _segment_value(self, segment: Any, names: list[str]) -> Any:
         data = self._segment_data(segment)
