@@ -13,6 +13,61 @@ try:
 except ImportError:
     from modules.constants import *
 
+IMAGE_SEGMENT_TYPES = {
+    "image",
+    "mface",
+    "market_face",
+    "marketface",
+    "pic",
+    "photo",
+    "sticker",
+    "bface",
+    "sface",
+}
+IMAGE_SOURCE_KEYS = [
+    "url",
+    "image_url",
+    "imageUrl",
+    "file_url",
+    "fileUrl",
+    "origin_url",
+    "originUrl",
+    "download_url",
+    "downloadUrl",
+    "resource_url",
+    "resourceUrl",
+    "preview_url",
+    "previewUrl",
+    "thumb_url",
+    "thumbUrl",
+    "thumbnail",
+    "thumb",
+    "big_url",
+    "bigUrl",
+    "static_url",
+    "staticUrl",
+    "path",
+    "file_path",
+    "filePath",
+    "local_path",
+    "localPath",
+    "src",
+    "source",
+    "image",
+    "image_file",
+    "imageFile",
+    "file",
+    "file_id",
+    "fileId",
+    "image_id",
+    "imageId",
+    "file_unique",
+    "fileUnique",
+    "file_uuid",
+    "fileUuid",
+]
+VIDEO_COVER_KEYS = ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"]
+
 
 class MessageMixin:
     async def _mention_record(
@@ -281,7 +336,7 @@ class MessageMixin:
             data = self._mapping_data(payload)
             value = self._first_mapping_value(
                 data,
-                ["url", "path", "file_path", "filePath", "local_path", "localPath", "src", "image", "base64", "file"],
+                [*IMAGE_SOURCE_KEYS, "base64"],
             )
             if not value or str(value) == file_id:
                 continue
@@ -335,7 +390,7 @@ class MessageMixin:
             if self._is_reference_segment(segment):
                 continue
             seg_type = self._segment_type(segment)
-            if seg_type in {"image", "mface", "market_face", "marketface"}:
+            if self._is_image_segment_type(seg_type):
                 saw_image = True
                 continue
             if self._is_target_at_segment(segment, mentions):
@@ -343,10 +398,12 @@ class MessageMixin:
 
         for text in self._raw_message_texts(event):
             saw_image = False
-            for match in re.finditer(r"\[CQ:(image|mface|market_face|at),([^\]]+)\]", text or "", re.I):
+            for match in re.finditer(r"\[CQ:([^,\]]+),([^\]]+)\]", text or "", re.I):
                 seg_type = match.group(1).lower()
-                if seg_type in {"image", "mface", "market_face"}:
+                if self._is_image_segment_type(seg_type):
                     saw_image = True
+                    continue
+                if seg_type != "at":
                     continue
                 data = self._parse_cq_attrs(match.group(2))
                 value = data.get("qq") or data.get("user_id") or data.get("target") or data.get("id")
@@ -378,7 +435,7 @@ class MessageMixin:
             if self._is_target_at_segment(segment, mentions):
                 saw_target_at = True
                 continue
-            if seg_type in {"image", "mface", "market_face", "marketface"}:
+            if self._is_image_segment_type(seg_type):
                 if saw_target_at:
                     saw_image_after_at = True
                 continue
@@ -399,7 +456,7 @@ class MessageMixin:
         saw_image_after_at = False
         parts: list[str] = []
         cursor = 0
-        for match in re.finditer(r"\[CQ:(image|mface|market_face|marketface|at),([^\]]+)\]", text or "", re.I):
+        for match in re.finditer(r"\[CQ:([^,\]]+),([^\]]+)\]", text or "", re.I):
             if saw_image_after_at and match.start() > cursor:
                 parts.append(text[cursor : match.start()])
             seg_type = match.group(1).lower()
@@ -408,7 +465,7 @@ class MessageMixin:
                 value = data.get("qq") or data.get("user_id") or data.get("target") or data.get("id")
                 if self._mention_matches(value, mentions):
                     saw_target_at = True
-            elif saw_target_at:
+            elif saw_target_at and self._is_image_segment_type(seg_type):
                 saw_image_after_at = True
             cursor = match.end()
         if saw_image_after_at and cursor < len(text or ""):
@@ -756,6 +813,9 @@ class MessageMixin:
         cls_name = item.__class__.__name__.lower()
         return any(token in cls_name for token in REFERENCE_SEGMENT_TYPES)
 
+    def _is_image_segment_type(self, seg_type: str) -> bool:
+        return str(seg_type or "").lower() in IMAGE_SEGMENT_TYPES
+
     def _segments_from_value(self, value: Any) -> list[Any]:
         if isinstance(value, list):
             return value
@@ -801,34 +861,11 @@ class MessageMixin:
             if self._is_reference_segment(segment):
                 continue
             seg_type = self._segment_type(segment)
-            if seg_type not in {"image", "mface", "market_face", "marketface"}:
+            if not self._is_image_segment_type(seg_type):
                 continue
-            names = [
-                "url",
-                "path",
-                "file_path",
-                "filePath",
-                "local_path",
-                "localPath",
-                "src",
-                "image",
-                "file_id",
-                "fileId",
-                "image_id",
-                "imageId",
-                "file",
-            ]
+            names = IMAGE_SOURCE_KEYS
             if seg_type in {"video", "shortvideo"}:
-                names = [
-                    "cover",
-                    "cover_url",
-                    "coverUrl",
-                    "thumbnail",
-                    "thumb",
-                    "preview",
-                    "poster",
-                    "image",
-                ]
+                names = VIDEO_COVER_KEYS
             values = self._segment_values(segment, names)
             if values:
                 urls.extend(str(value) for value in values)
@@ -839,6 +876,9 @@ class MessageMixin:
                 text = str(base64_value).strip()
                 if text:
                     urls.append(text if text.startswith(("base64://", "data:image/")) else f"base64://{text}")
+            else:
+                data = self._segment_data(segment)
+                logger.debug(f"[谁艾特我] 图片段未找到可渲染来源: type={seg_type}, keys={list(data.keys()) if data else []}")
         return self._unique_strings(urls)
 
     def _segments_media(self, segments: list[Any]) -> list[dict[str, str]]:
@@ -857,7 +897,7 @@ class MessageMixin:
             cover = self._first_string(
                 self._segment_values(
                     segment,
-                    ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"],
+                    VIDEO_COVER_KEYS,
                 )
             )
             source = self._first_string(
@@ -961,7 +1001,7 @@ class MessageMixin:
 
     def _segment_media_summary(self, segment: Any) -> str:
         seg_type = self._segment_type(segment)
-        if seg_type in {"image"}:
+        if self._is_image_segment_type(seg_type):
             return ""
         if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
             return "[表情]"
@@ -1022,7 +1062,7 @@ class MessageMixin:
         summaries = []
         for seg_type in re.findall(r"\[CQ:([^,\]]+)", text or ""):
             seg_type = seg_type.lower()
-            if seg_type in {"image"}:
+            if self._is_image_segment_type(seg_type):
                 continue
             if seg_type in {"mface", "market_face", "face", "emoji"}:
                 summaries.append("[表情]")
@@ -1050,14 +1090,16 @@ class MessageMixin:
 
     def _images_from_cq(self, text: str) -> list[str]:
         images = []
-        for match in re.finditer(r"\[CQ:(image|mface|market_face|video|shortvideo),([^\]]+)\]", text):
+        for match in re.finditer(r"\[CQ:([^,\]]+),([^\]]+)\]", text or "", re.I):
             seg_type = match.group(1).lower()
+            if not self._is_image_segment_type(seg_type) and seg_type not in {"video", "shortvideo"}:
+                continue
             attrs = match.group(2)
             data = self._parse_cq_attrs(attrs)
             names = (
-                ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"]
+                VIDEO_COVER_KEYS
                 if seg_type in {"video", "shortvideo"}
-                else ["url", "path", "file_path", "local_path", "src", "image", "file_id", "image_id", "file"]
+                else IMAGE_SOURCE_KEYS
             )
             value = self._first_mapping_value(data, names)
             if value:
@@ -1196,6 +1238,14 @@ class MessageMixin:
                 "url",
                 "src",
                 "image",
+                "image_url",
+                "imageUrl",
+                "file_url",
+                "fileUrl",
+                "thumb_url",
+                "thumbUrl",
+                "preview_url",
+                "previewUrl",
                 "source",
                 "file",
             ):
