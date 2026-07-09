@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime
@@ -311,12 +312,25 @@ class MessageMixin:
     async def _images(self, event: AstrMessageEvent) -> list[str]:
         images = []
         raw_segments = self._raw_message_segments(event)
+        chain_segments = self._message_chain(event)
         if raw_segments:
             images.extend(self._segments_images(raw_segments))
-        images.extend(self._segments_images(self._message_chain(event)))
+        images.extend(self._segments_images(chain_segments))
         for text in self._raw_message_texts(event):
             images.extend(self._images_from_cq(text))
-        return await self._resolve_image_sources(event, self._unique_strings(images))
+        candidates = self._unique_strings(images)
+        resolved = await self._resolve_image_sources(event, candidates)
+        raw_texts = self._raw_message_texts(event)
+        if not resolved and self._has_image_debug_hint([*raw_segments, *chain_segments, *raw_texts]):
+            logger.warning(
+                "[who_at_me] image extraction empty; "
+                f"raw={self._segments_debug_summary(raw_segments)} "
+                f"chain={self._segments_debug_summary(chain_segments)} "
+                f"raw_texts={self._debug_text_values(raw_texts)}"
+            )
+        elif candidates and not resolved:
+            logger.warning(f"[who_at_me] image candidates unresolved; candidates={self._debug_text_values(candidates)}")
+        return resolved
 
     async def _resolve_image_sources(self, event: AstrMessageEvent, images: list[str]) -> list[str]:
         result = []
@@ -950,6 +964,7 @@ class MessageMixin:
                 if text:
                     urls.append(text if text.startswith(("base64://", "data:image/")) else f"base64://{text}")
             else:
+                logger.warning(f"[who_at_me] image-like segment has no source; segment={self._segment_debug_summary(segment)}")
                 data = self._segment_data(segment)
                 logger.debug(f"[谁艾特我] 图片段未找到可渲染来源: type={seg_type}, keys={list(data.keys()) if data else []}")
         return self._unique_strings(urls)
@@ -1197,9 +1212,49 @@ class MessageMixin:
                 return data
 
         data = getattr(value, "__dict__", None)
-        if isinstance(data, dict):
+        if isinstance(data, dict) and data:
             return {key: item for key, item in data.items() if not str(key).startswith("_")}
+        text = str(value or "").strip()
+        if text.startswith("{") or text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                return {}
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        return item
         return {}
+
+    def _has_image_debug_hint(self, values: list[Any]) -> bool:
+        for value in values:
+            text = self._debug_text(value).lower()
+            if any(token in text for token in ("image", "picture", "photo", "media_image", ".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                return True
+        return False
+
+    def _segments_debug_summary(self, segments: list[Any]) -> list[dict[str, Any]]:
+        return [self._segment_debug_summary(segment) for segment in segments[:8]]
+
+    def _segment_debug_summary(self, segment: Any) -> dict[str, Any]:
+        data = self._segment_data(segment)
+        values = self._segment_values(segment, IMAGE_SOURCE_KEYS) if data or not isinstance(segment, str) else []
+        return {
+            "class": segment.__class__.__name__,
+            "type": self._segment_type(segment),
+            "keys": list(data.keys())[:24] if isinstance(data, dict) else [],
+            "values": self._debug_text_values(values),
+            "text": self._debug_text(segment),
+        }
+
+    def _debug_text_values(self, values: list[Any]) -> list[str]:
+        return [self._debug_text(value) for value in values[:8]]
+
+    def _debug_text(self, value: Any, limit: int = 240) -> str:
+        text = str(value or "").replace("\n", "\\n").replace("\r", "\\r")
+        return text if len(text) <= limit else text[:limit] + "..."
 
     def _segment_value(self, segment: Any, names: list[str]) -> Any:
         data = self._segment_data(segment)
