@@ -963,7 +963,9 @@ class MessageMixin:
             else:
                 values = self._segment_image_values(segment, names)
             if values:
-                urls.extend(str(value) for value in values)
+                source = self._first_image_source(values)
+                if source:
+                    urls.append(source)
                 continue
             data = self._segment_data(segment)
             base64_value = self._first_mapping_value(data, ["base64"]) if data else None
@@ -980,6 +982,13 @@ class MessageMixin:
     def _segment_image_values(self, segment: Any, names: list[str] | None = None) -> list[Any]:
         values = self._segment_values(segment, names or IMAGE_SOURCE_KEYS)
         return [value for value in values if self._looks_like_image_source(value)]
+
+    def _first_image_source(self, values: list[Any]) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
 
     def _looks_like_image_source(self, value: Any) -> bool:
         text = str(value or "").strip()
@@ -1890,15 +1899,21 @@ class MessageMixin:
         result: list[dict[str, str]] = []
         seen_sources: set[str] = set()
         seen_locals: set[str] = set()
+        seen_hashes: set[str] = set()
         for item in items:
             if not isinstance(item, dict):
                 continue
             source = str(item.get("source") or "").strip()
             local = str(item.get("local") or "").strip()
+            digest = str(item.get("hash") or "").strip()
+            if digest and digest in seen_hashes:
+                continue
             if source and source in seen_sources:
                 continue
             if not source and local and local in seen_locals:
                 continue
+            if digest:
+                seen_hashes.add(digest)
             if source:
                 seen_sources.add(source)
             if local:

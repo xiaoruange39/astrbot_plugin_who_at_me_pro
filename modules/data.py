@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import re
 import time
 import uuid
@@ -77,11 +78,16 @@ class DataMixin:
 
     async def _cache_record_direct_images(self, record: dict[str, Any]) -> None:
         cache = record.get("image_cache")
-        existing_cache = list(cache) if isinstance(cache, list) else []
+        existing_cache = self._dedupe_image_cache_entries(list(cache) if isinstance(cache, list) else [])
         cached_sources = {
             str(item.get("source") or "").strip()
             for item in existing_cache
             if isinstance(item, dict) and str(item.get("source") or "").strip()
+        }
+        cached_hashes = {
+            digest
+            for digest in (self._image_cache_hash(item) for item in existing_cache)
+            if digest
         }
 
         images = record.get("images") or record.get("image") or []
@@ -96,9 +102,9 @@ class DataMixin:
             if source and source not in cached_sources:
                 candidates.append(image)
 
-        new_cache = await self._cache_images(candidates)
-        if new_cache:
-            record["image_cache"] = [*existing_cache, *new_cache]
+        new_cache = await self._cache_images(candidates, existing_hashes=cached_hashes)
+        if existing_cache or new_cache:
+            record["image_cache"] = self._dedupe_image_cache_entries([*existing_cache, *new_cache])
 
     async def _cache_media_covers(self, record: dict[str, Any]) -> None:
         media = record.get("media")
@@ -114,7 +120,7 @@ class DataMixin:
             if cached:
                 item["cover_cache"] = cached
 
-    async def _cache_images(self, images: Any) -> list[dict[str, str]]:
+    async def _cache_images(self, images: Any, existing_hashes: set[str] | None = None) -> list[dict[str, str]]:
         if isinstance(images, str):
             candidates = [images]
         elif isinstance(images, list):
@@ -123,13 +129,23 @@ class DataMixin:
             return []
 
         result = []
+        seen_sources: set[str] = set()
+        seen_hashes: set[str] = set(existing_hashes or set())
         for image in candidates:
             source = str(image or "").strip()
-            if not source:
+            if not source or source in seen_sources:
                 continue
+            seen_sources.add(source)
             cached = await self._cache_image(source)
-            if cached:
-                result.append(cached)
+            if not cached:
+                continue
+            digest = str(cached.get("hash") or "").strip()
+            if digest and digest in seen_hashes:
+                self._delete_cached_image(cached.get("local"))
+                continue
+            if digest:
+                seen_hashes.add(digest)
+            result.append(cached)
         return result
 
     async def _cache_image(self, source: str) -> dict[str, str] | None:
@@ -137,16 +153,68 @@ class DataMixin:
             data, image_type = await asyncio.to_thread(self._read_image_source, source)
             if not data:
                 return None
+            digest = hashlib.sha256(data).hexdigest()
             suffix = self._cached_image_suffix(data, source, image_type)
             if not suffix:
                 return None
             output = self._new_message_image_cache_path(suffix)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(data)
-            return {"source": source, "local": str(output)}
+            return {"source": source, "local": str(output), "hash": digest}
         except Exception as exc:
             logger.debug(f"[谁艾特我] 缓存消息图片失败: {type(exc).__name__}: {exc}")
             return None
+
+    def _dedupe_image_cache_entries(self, entries: list[Any]) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        seen_sources: set[str] = set()
+        seen_locals: set[str] = set()
+        seen_hashes: set[str] = set()
+        kept_locals: set[str] = set()
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            local = str(item.get("local") or "").strip()
+            digest = self._image_cache_hash(item)
+            if digest and digest in seen_hashes:
+                if local and local not in kept_locals:
+                    self._delete_cached_image(local)
+                continue
+            if source and source in seen_sources:
+                if local and local not in kept_locals:
+                    self._delete_cached_image(local)
+                continue
+            if not source and local and local in seen_locals:
+                continue
+            if source:
+                seen_sources.add(source)
+            if local:
+                seen_locals.add(local)
+                kept_locals.add(local)
+            if digest:
+                seen_hashes.add(digest)
+            result.append({k: str(v) for k, v in item.items() if v is not None})
+        return result
+
+    def _image_cache_hash(self, item: Any) -> str:
+        if not isinstance(item, dict):
+            return ""
+        digest = str(item.get("hash") or "").strip()
+        if digest:
+            return digest
+        local = str(item.get("local") or "").strip()
+        if not local:
+            return ""
+        try:
+            path = Path(local)
+            if not path.exists() or not path.is_file():
+                return ""
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            item["hash"] = digest
+            return digest
+        except OSError:
+            return ""
 
     def _read_image_source(self, source: str) -> tuple[bytes, str]:
         value = str(source or "").strip()
