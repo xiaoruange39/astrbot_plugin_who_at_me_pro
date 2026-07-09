@@ -668,7 +668,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         render_is_at = bool(is_at or inferred_at)
         if render_is_at:
             message = self._strip_at_display(message, at_candidates)
-        at_after_image = bool((data.get("at_after_image") or inferred_at) and images)
+        at_after_image = bool(data.get("at_after_image") and images)
         role = str(data.get("role") or "member").lower()
         role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
