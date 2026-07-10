@@ -1,6 +1,6 @@
 name: astrbot_plugin_who_at_me_pro
 display_name: 谁艾特我Pro
-desc: 记录群聊里谁艾特过你，并支持查询、清理和上下文记录。
+desc: 记录群聊里谁艾特过你，并渲染一张精美的图片，支持查询、清理和上下文记录。
 short_desc: 查询谁在群里艾特过你。
 version: v1.0.0
 author: xiaoruange39
