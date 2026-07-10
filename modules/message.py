@@ -227,7 +227,7 @@ class MessageMixin:
 
         message_value = self._first_mapping_value(
             data,
-            ["message", "message_chain", "messageChain", "content", "raw_message", "rawMessage"],
+            ["message", "message_chain", "messageChain", "chain", "content", "raw_message", "rawMessage"],
         )
         segments = self._segments_from_value(message_value)
         message = self._segments_text(segments, include_at=True) if segments else ""
@@ -1254,6 +1254,8 @@ class MessageMixin:
 
     def _has_image_debug_hint(self, values: list[Any]) -> bool:
         for value in values:
+            if self._is_reference_segment(value):
+                continue
             text = self._debug_text(value).lower()
             if any(token in text for token in ("image", "picture", "photo", "media_image", ".jpg", ".jpeg", ".png", ".webp", ".gif")):
                 return True
