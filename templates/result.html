@@ -185,6 +185,67 @@
       background: #fff;
       box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
+
+    .media-card.audio {
+      min-width: 156px;
+      max-width: 230px;
+      gap: 12px;
+      padding: 11px 14px;
+      border: 1px solid #e4ebf4;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #fff 0%, #f7fbff 100%);
+    }
+    .voice-wave {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      width: 44px;
+      height: 30px;
+      flex: 0 0 44px;
+      border-radius: 15px;
+      background: #eaf4ff;
+    }
+    .voice-wave i {
+      display: block;
+      width: 3px;
+      border-radius: 3px;
+      background: #1677ff;
+    }
+    .voice-wave i:nth-child(1),
+    .voice-wave i:nth-child(5) { height: 8px; }
+    .voice-wave i:nth-child(2),
+    .voice-wave i:nth-child(4) { height: 15px; }
+    .voice-wave i:nth-child(3) { height: 22px; }
+    .voice-label {
+      color: #52606f;
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .media-card.emoji {
+      width: 64px;
+      height: 64px;
+      max-width: none;
+      padding: 0;
+      justify-content: center;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .qq-face {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 56px;
+      height: 56px;
+      border-radius: 18px;
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(27, 49, 77, 0.12);
+      font-family: "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
+      font-size: 34px;
+      line-height: 1;
+    }
     .media-card.video {
       position: relative;
       display: inline-flex;
@@ -495,11 +556,16 @@
                           <span class="media-play"></span>
                         </div>
                       {% elif media.type == "audio" %}
-                        <div class="media-card"><span class="media-icon">♪</span><div class="media-meta"><div class="media-title">{{ media.title }}</div><div class="media-sub">语音</div></div></div>
+                        <div class="media-card audio" aria-label="voice">
+                          <span class="voice-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+                          <span class="voice-label">&#35821;&#38899;&#28040;&#24687;</span>
+                        </div>
                       {% elif media.type == "file" %}
                         <div class="media-card"><span class="media-icon">?</span><div class="media-meta"><div class="media-title">{{ media.title }}</div><div class="media-sub">{{ media.size or "文件" }}</div></div></div>
                       {% elif media.type == "emoji" %}
-                        <div class="media-card"><span class="media-icon">☺</span><div class="media-meta"><div class="media-title">{{ media.title }}</div><div class="media-sub">表情</div></div></div>
+                        <div class="media-card emoji" title="QQ face">
+                          <span class="qq-face" aria-hidden="true">&#128522;</span>
+                        </div>
                       {% endif %}
                     {% endfor %}
                     <div class="msg-time-bottom">{{ msg.time_text }}</div>

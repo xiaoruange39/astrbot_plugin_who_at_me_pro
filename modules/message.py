@@ -392,13 +392,13 @@ class MessageMixin:
         return ""
 
     def _media(self, event: AstrMessageEvent) -> list[dict[str, str]]:
-        media: list[dict[str, str]] = []
         raw_segments = self._raw_message_segments(event)
-        if raw_segments:
-            media.extend(self._segments_media(raw_segments))
-        media.extend(self._segments_media(self._message_chain(event)))
-        for text in self._raw_message_texts(event):
-            media.extend(self._media_from_cq(text))
+        raw_media = self._segments_media(raw_segments) if raw_segments else []
+        chain_media = self._segments_media(self._message_chain(event))
+        media = list(chain_media or raw_media)
+        if not media:
+            for text in self._raw_message_texts(event):
+                media.extend(self._media_from_cq(text))
         return self._unique_media(media)
 
     def _raw_message_texts(self, event: AstrMessageEvent) -> list[str]:
@@ -993,6 +993,8 @@ class MessageMixin:
                 if text:
                     urls.append(text if text.startswith(("base64://", "data:image/")) else f"base64://{text}")
             else:
+                if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
+                    continue
                 logger.warning(f"[who_at_me] image-like segment has no source; segment={self._segment_debug_summary(segment)}")
                 data = self._segment_data(segment)
                 logger.debug(f"[谁艾特我] 图片段未找到可渲染来源: type={seg_type}, keys={list(data.keys()) if data else []}")
@@ -1058,6 +1060,8 @@ class MessageMixin:
             text = str(self._segment_value(segment, ["text", "title", "name"]) or "")
             return {"type": "audio", "title": text or "语音", "source": source}
         if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
+            if self._segment_image_values(segment):
+                return None
             return {"type": "emoji", "title": "表情"}
         return None
 
