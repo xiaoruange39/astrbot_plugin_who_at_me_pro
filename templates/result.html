@@ -223,29 +223,6 @@
       font-weight: 700;
       white-space: nowrap;
     }
-    .media-card.emoji {
-      width: 64px;
-      height: 64px;
-      max-width: none;
-      padding: 0;
-      justify-content: center;
-      border: 0;
-      background: transparent;
-      box-shadow: none;
-    }
-    .qq-face {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 56px;
-      height: 56px;
-      border-radius: 18px;
-      background: #fff;
-      box-shadow: 0 2px 8px rgba(27, 49, 77, 0.12);
-      font-family: "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
-      font-size: 34px;
-      line-height: 1;
-    }
     .media-card.video {
       position: relative;
       display: inline-flex;
@@ -537,7 +514,7 @@
                           </div>
                         {% endif %}
                         {% for image in msg.images %}
-                          <img src="{{ image }}" class="msg-img" onerror="this.remove()" />
+                          <img src="{{ image }}" class="msg-img" onerror="const bubble=this.closest('.msg-bubble'); this.remove(); if (bubble && !bubble.querySelector('.quote-card, .msg-text, .msg-img')) bubble.remove()" />
                         {% endfor %}
                         {% if msg.has_message_after_images and not msg.at_after_image %}
                           <div class="msg-text after-images">{{ msg.message_after_images_html | safe }}</div>
@@ -562,10 +539,6 @@
                         </div>
                       {% elif media.type == "file" %}
                         <div class="media-card"><span class="media-icon">?</span><div class="media-meta"><div class="media-title">{{ media.title }}</div><div class="media-sub">{{ media.size or "文件" }}</div></div></div>
-                      {% elif media.type == "emoji" %}
-                        <div class="media-card emoji" title="QQ face">
-                          <span class="qq-face" aria-hidden="true">&#128522;</span>
-                        </div>
                       {% endif %}
                     {% endfor %}
                     <div class="msg-time-bottom">{{ msg.time_text }}</div>

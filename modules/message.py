@@ -1060,9 +1060,7 @@ class MessageMixin:
             text = str(self._segment_value(segment, ["text", "title", "name"]) or "")
             return {"type": "audio", "title": text or "语音", "source": source}
         if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
-            if self._segment_image_values(segment):
-                return None
-            return {"type": "emoji", "title": "表情"}
+            return None
         return None
 
     def _first_string(self, values: list[Any]) -> str:
@@ -1171,7 +1169,7 @@ class MessageMixin:
         if self._is_chat_record_segment(seg_type, data):
             return CHAT_RECORD_TEXT
         if seg_type in {"mface", "market_face", "marketface", "face", "emoji"}:
-            return "[表情]"
+            return self._face_display(segment)
         if seg_type in {"video", "shortvideo"}:
             return "[视频]"
         if seg_type in {"record", "voice", "audio"}:
@@ -1188,6 +1186,13 @@ class MessageMixin:
                 return self._strip_cq_display(str(value))
             return "[卡片消息]"
         return ""
+
+    def _face_display(self, segment: Any) -> str:
+        return self._face_display_from_id(self._segment_value(segment, ["id", "face_id", "faceId"]))
+
+    def _face_display_from_id(self, face_id: Any) -> str:
+        value = str(face_id if face_id is not None else "").strip()
+        return f"[face id={value}]" if value else "[face]"
 
     def _segment_type(self, segment: Any) -> str:
         if isinstance(segment, dict):
@@ -1364,6 +1369,7 @@ class MessageMixin:
     def _strip_cq_display(self, text: str) -> str:
         cleaned = re.sub(r"\[CQ:reply,[^\]]+\]", " ", text)
         cleaned = re.sub(r"\[CQ:image,[^\]]+\]", " ", cleaned)
+        cleaned = re.sub(r"\[CQ:(?:face|emoji),([^\]]+)\]", self._cq_face_display, cleaned, flags=re.I)
         cleaned = re.sub(r"\[CQ:at,([^\]]+)\]", self._cq_at_display, cleaned)
         cleaned = re.sub(r"\[CQ:[^\]]+\]", " ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
@@ -1380,7 +1386,7 @@ class MessageMixin:
                 summaries.append(CHAT_RECORD_TEXT)
                 continue
             if seg_type in {"mface", "market_face", "face", "emoji"}:
-                summaries.append("[表情]")
+                summaries.append(self._face_display_from_id(self._first_mapping_value(data, ["id", "face_id", "faceId"])))
             elif seg_type in {"video", "shortvideo"}:
                 summaries.append("[视频]")
             elif seg_type in {"record", "voice", "audio"}:
@@ -1390,6 +1396,10 @@ class MessageMixin:
             elif seg_type in {"json", "xml", "card", "share"}:
                 summaries.append("[卡片消息]")
         return " ".join(self._unique_strings(summaries))
+
+    def _cq_face_display(self, match: re.Match[str]) -> str:
+        data = self._parse_cq_attrs(match.group(1))
+        return self._face_display_from_id(self._first_mapping_value(data, ["id", "face_id", "faceId"]))
 
     def _cq_at_display(self, match: re.Match[str]) -> str:
         data = self._parse_cq_attrs(match.group(1))
@@ -1483,6 +1493,8 @@ class MessageMixin:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("type") or "file").lower()
+            if kind == "emoji":
+                continue
             card = {
                 "type": kind,
                 "title": str(item.get("title") or {"video": "视频", "audio": "语音", "file": "文件"}.get(kind, "媒体")),
