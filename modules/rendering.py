@@ -29,7 +29,7 @@ class RenderingMixin:
         data = dict(data)
         data.setdefault("layout", self._render_layout())
         data.setdefault("custom_font_css", self._custom_font_css())
-        data.setdefault("extract_video_frame", self._extract_video_frame())
+        data["extract_video_frame"] = False
         timeout = self._render_task_timeout_sec()
         if self._config_bool("render", "prefer_browser", default=True):
             try:
@@ -224,7 +224,11 @@ class RenderingMixin:
             except TypeError:
                 try:
                     rendered = await self.html_render(html_text, {}, options=options)
-                    return str(rendered)
+                    image_path = self._store_t2i_render_result(rendered, str(options.get("type") or ""))
+                    if image_path:
+                        return image_path
+                    logger.warning(f"[璋佽壘鐗规垜] t2i 杩斿洖浜嗘棤鏁堝浘鐗囨暟鎹紝灏濊瘯涓嬩竴绛栫暐: {options}")
+                    continue
                 except Exception as exc:
                     last_error = exc
                     logger.warning(f"[谁艾特我] t2i 渲染失败: {type(exc).__name__}: {exc}")
@@ -245,19 +249,21 @@ class RenderingMixin:
         raise RuntimeError("t2i 渲染没有返回有效图片")
 
     def _t2i_render_options(self) -> list[dict[str, Any]]:
+        first_timeout = max(self._render_page_timeout_ms(), 50000)
+        second_timeout = max(first_timeout, 100000)
         return [
             {
                 "full_page": True,
                 "type": "png",
                 "device_scale_factor_level": "ultra",
-                "timeout": self._render_page_timeout_ms(),
+                "timeout": first_timeout,
             },
             {
                 "full_page": True,
                 "type": "jpeg",
-                "quality": self._render_quality(),
+                "quality": min(self._render_quality(), 80),
                 "device_scale_factor_level": "high",
-                "timeout": self._render_page_timeout_ms(),
+                "timeout": second_timeout,
             },
         ]
 
@@ -284,7 +290,9 @@ class RenderingMixin:
                 return None
         if text.startswith("<") or "<html" in text[:200].lower():
             return None
-        return text
+        if re.match(r"^https?://", text, re.I):
+            return text
+        return self._store_t2i_file_result(text)
 
     def _store_t2i_image_bytes(self, data: bytes, image_type: str = "") -> str | None:
         suffix = self._t2i_image_suffix(data, image_type)
@@ -294,10 +302,62 @@ class RenderingMixin:
         output = self._new_render_path(suffix)
         try:
             output.write_bytes(data)
+            self._trim_t2i_blank_margin(output)
             return str(output)
         except Exception as exc:
             logger.warning(f"[谁艾特我] 保存 t2i 图片失败: {type(exc).__name__}: {exc}")
             return None
+
+    def _store_t2i_file_result(self, value: str) -> str | None:
+        try:
+            path = Path(value)
+            if not path.exists() or not path.is_file():
+                return None
+            head = path.read_bytes()[:16]
+            if not self._t2i_image_suffix(head, path.suffix):
+                logger.warning(f"[who_at_me] t2i returned non-image file: {path}")
+                return None
+            self._trim_t2i_blank_margin(path)
+            return str(path)
+        except Exception as exc:
+            logger.warning(f"[who_at_me] t2i file result rejected: {type(exc).__name__}: {exc}")
+            return None
+
+    def _trim_t2i_blank_margin(self, path: Path) -> None:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as img:
+                width, height = img.size
+                if width <= 720 or height <= 0:
+                    return
+                work = img.convert("RGB")
+                bg = work.getpixel((width - 1, min(10, height - 1)))
+                y_step = max(1, height // 600)
+                x_step = 1 if width <= 1600 else 2
+                right = width - 1
+                for x in range(width - 1, -1, -x_step):
+                    has_content = False
+                    for y in range(0, height, y_step):
+                        pixel = work.getpixel((x, y))
+                        if sum(abs(pixel[i] - bg[i]) for i in range(3)) > 24:
+                            has_content = True
+                            break
+                    if has_content:
+                        right = min(width - 1, x + 28)
+                        break
+                if width - right < 80 or right < 320:
+                    return
+                cropped = img.crop((0, 0, right + 1, height))
+                suffix = path.suffix.lower()
+                if suffix in {".jpg", ".jpeg"}:
+                    cropped.convert("RGB").save(path, format="JPEG", quality=max(90, self._render_quality()), optimize=True)
+                elif suffix == ".webp":
+                    cropped.save(path, format="WEBP", quality=max(90, self._render_quality()))
+                else:
+                    cropped.save(path)
+        except Exception as exc:
+            logger.debug(f"[who_at_me] t2i blank-margin trim skipped: {type(exc).__name__}: {exc}")
 
     def _t2i_image_suffix(self, data: bytes, image_type: str = "") -> str:
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -343,40 +403,6 @@ class RenderingMixin:
                     }
                   }
 
-                  const videos = Array.from(document.querySelectorAll("video.media-video") || []);
-                  await Promise.race([
-                    Promise.all(videos.map((video) => new Promise((resolve) => {
-                      if (video.readyState >= 1) {
-                        resolve();
-                        return;
-                      }
-                      const done = () => resolve();
-                      video.addEventListener("loadedmetadata", done, { once: true });
-                      video.addEventListener("loadeddata", done, { once: true });
-                      video.addEventListener("error", done, { once: true });
-                    }))),
-                    delay(assetTimeout),
-                  ]);
-                  for (const video of videos) {
-                    await Promise.race([
-                      new Promise((resolve) => {
-                        if (!video.duration || !Number.isFinite(video.duration)) {
-                          resolve();
-                          return;
-                        }
-                        const done = () => resolve();
-                        video.addEventListener("seeked", done, { once: true });
-                        video.addEventListener("error", done, { once: true });
-                        try {
-                          const target = Math.min(Math.max(0.5, video.duration * 0.1), Math.max(0.1, video.duration - 0.1));
-                          video.currentTime = target;
-                        } catch (_) {
-                          resolve();
-                        }
-                      }),
-                      delay(Math.min(assetTimeout, 2000)),
-                    ]);
-                  }
                 }
                 """,
                 asset_timeout,

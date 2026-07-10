@@ -69,7 +69,6 @@ IMAGE_SOURCE_KEYS = [
     "file_uuid",
     "fileUuid",
 ]
-VIDEO_COVER_KEYS = ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"]
 CHAT_RECORD_TEXT = "[聊天记录]"
 CHAT_RECORD_SEGMENT_TYPES = {"forward", "forward_msg", "merged_forward", "multimsg"}
 RECALL_NOTICE_TYPES = {"group_recall", "friend_recall", "recall", "message_recall", "revoke", "message_revoke"}
@@ -973,11 +972,11 @@ class MessageMixin:
             if self._is_reference_segment(segment):
                 continue
             seg_type = self._segment_type(segment)
+            if seg_type in {"video", "shortvideo"}:
+                continue
             if not self._is_image_segment(segment):
                 continue
             names = IMAGE_SOURCE_KEYS
-            if seg_type in {"video", "shortvideo"}:
-                names = VIDEO_COVER_KEYS
             if self._is_image_segment_type(seg_type) or self._is_image_component_name(segment):
                 values = self._segment_values(segment, names)
             else:
@@ -1036,23 +1035,11 @@ class MessageMixin:
     def _media_from_segment(self, segment: Any) -> dict[str, str] | None:
         seg_type = self._segment_type(segment)
         if seg_type in {"video", "shortvideo"}:
-            cover = self._first_string(
-                self._segment_values(
-                    segment,
-                    VIDEO_COVER_KEYS,
-                )
-            )
-            source = self._first_string(
-                self._segment_values(
-                    segment,
-                    ["url", "path", "file_path", "filePath", "local_path", "localPath", "src", "file"],
-                )
-            )
             title = self._display_name(
                 self._segment_value(segment, ["title", "name", "file_name", "fileName", "filename"]),
                 default="视频",
             )
-            return {"type": "video", "title": title, "source": source, "cover": cover}
+            return {"type": "video", "title": title}
         if seg_type == "file":
             source = self._first_string(
                 self._segment_values(segment, ["url", "path", "file_path", "filePath", "local_path", "localPath", "file_", "file"])
@@ -1414,15 +1401,11 @@ class MessageMixin:
         images = []
         for match in re.finditer(r"\[CQ:([^,\]]+),([^\]]+)\]", text or "", re.I):
             seg_type = match.group(1).lower()
-            if not self._is_image_segment_type(seg_type) and seg_type not in {"video", "shortvideo"}:
+            if not self._is_image_segment_type(seg_type):
                 continue
             attrs = match.group(2)
             data = self._parse_cq_attrs(attrs)
-            names = (
-                VIDEO_COVER_KEYS
-                if seg_type in {"video", "shortvideo"}
-                else IMAGE_SOURCE_KEYS
-            )
+            names = IMAGE_SOURCE_KEYS
             value = self._first_mapping_value(data, names)
             if value:
                 images.append(value)
@@ -1442,18 +1425,8 @@ class MessageMixin:
             seg_type = match.group(1).lower()
             data = self._parse_cq_attrs(match.group(2))
             if seg_type in {"video", "shortvideo"}:
-                cover = str(
-                    self._first_mapping_value(
-                        data,
-                        ["cover", "cover_url", "coverUrl", "thumbnail", "thumb", "preview", "poster", "image"],
-                    )
-                    or ""
-                )
-                source = str(
-                    self._first_mapping_value(data, ["url", "path", "file_path", "local_path", "src", "file"]) or ""
-                )
                 title = str(self._first_mapping_value(data, ["title", "name", "filename", "file_name"]) or "视频")
-                media.append({"type": "video", "title": title, "source": source, "cover": cover})
+                media.append({"type": "video", "title": title})
             elif seg_type == "file":
                 source = str(self._first_mapping_value(data, ["url", "path", "file_path", "local_path", "file"]) or "")
                 title = str(
@@ -1508,9 +1481,10 @@ class MessageMixin:
                 "type": kind,
                 "title": str(item.get("title") or {"video": "视频", "audio": "语音", "file": "文件"}.get(kind, "媒体")),
                 "size": str(item.get("size") or ""),
-                "cover": self._renderable_image(self._media_cached_value(item, "cover") or item.get("cover")),
-                "source": self._renderable_media_source(self._media_cached_value(item, "source") or item.get("source")),
             }
+            if kind != "video":
+                card["cover"] = self._renderable_image(self._media_cached_value(item, "cover") or item.get("cover"))
+                card["source"] = self._renderable_media_source(self._media_cached_value(item, "source") or item.get("source"))
             result.append(card)
         return self._unique_media(result)
 
