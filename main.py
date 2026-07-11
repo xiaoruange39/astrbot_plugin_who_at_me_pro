@@ -84,6 +84,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._group_message_counts: dict[str, int] = {}
         self._message_count_epoch = uuid.uuid4().hex
         self._kv_locks: dict[str, asyncio.Lock] = {}
+        self._group_pipeline_locks: dict[str, asyncio.Lock] = {}
+
+    def _group_pipeline_lock(self, group_id: str) -> asyncio.Lock:
+        lock = self._group_pipeline_locks.get(group_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._group_pipeline_locks[group_id] = lock
+        return lock
 
     def _register_page_apis(self, context: Context) -> None:
         try:
@@ -199,7 +207,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             self._disable_llm(event)
             if sender_id:
                 if not activity_handled:
-                    await self._delete_pending_reminders(group_id, sender_id)
+                    await self._handle_plugin_command_activity(event, group_id, sender_id, text)
                 await self._record_context_message(event, group_id, mentions, append_to_cache=True)
             command_result = await self._handle_command(event, group_id, text, mentions)
             for result in command_result or []:
@@ -226,9 +234,21 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
         text = self._normalize_command_text(self._message_text(event))
         if self._is_plugin_command(text):
-            await self._delete_pending_reminders(group_id, sender_id)
+            await self._handle_plugin_command_activity(event, group_id, sender_id, text)
             return
 
+        await self._deliver_pending_reminders(event, group_id, sender_id)
+
+    async def _handle_plugin_command_activity(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        sender_id: str,
+        text: str,
+    ) -> None:
+        if self._plugin_command_discards_pending(text):
+            await self._delete_pending_reminders(group_id, sender_id)
+            return
         await self._deliver_pending_reminders(event, group_id, sender_id)
 
     async def _handle_command(
@@ -328,6 +348,18 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 REMINDER_CONTEXT_ON_PATTERN,
                 REMINDER_CONTEXT_OFF_PATTERN,
                 REMINDER_CONTEXT_SET_PATTERN,
+            )
+        )
+
+    def _plugin_command_discards_pending(self, text: str) -> bool:
+        stripped = text.strip()
+        return any(
+            pattern.match(stripped)
+            for pattern in (
+                CLEAR_PATTERN,
+                CLEAR_ALL_PATTERN,
+                REMINDER_GROUP_OFF_PATTERN,
+                REMINDER_PERSONAL_OFF_PATTERN,
             )
         )
 
@@ -467,8 +499,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         group_id: str,
         mentions: list[str],
     ) -> None:
-        async with self._data_operation():
-            await self._record_mentions_locked(event, group_id, mentions)
+        async with self._group_pipeline_lock(group_id):
+            async with self._data_operation():
+                await self._record_mentions_locked(event, group_id, mentions)
 
     async def _record_mentions_locked(
         self,
@@ -476,7 +509,12 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         group_id: str,
         mentions: list[str],
     ) -> None:
-        context_state = await self._record_context_message(event, group_id, mentions, append_to_cache=False)
+        context_state = await self._record_context_message_locked(
+            event,
+            group_id,
+            mentions,
+            append_to_cache=False,
+        )
         context_on = bool(context_state.get("context_on"))
         reminder_context = context_state["reminder_context"]
         reminder_context_on = bool(context_state.get("reminder_context_on"))
@@ -541,13 +579,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         *,
         append_to_cache: bool,
     ) -> dict[str, Any]:
-        async with self._data_operation():
-            return await self._record_context_message_locked(
-                event,
-                group_id,
-                mentions,
-                append_to_cache=append_to_cache,
-            )
+        async with self._group_pipeline_lock(group_id):
+            async with self._data_operation():
+                return await self._record_context_message_locked(
+                    event,
+                    group_id,
+                    mentions,
+                    append_to_cache=append_to_cache,
+                )
 
     async def _record_context_message_locked(
         self,
@@ -709,6 +748,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         pending.sort(key=self._record_sort_key)
         target_name = await self._target_name(event, group_id, user_id)
         pending = await self._resolve_record_pokes(event, group_id, pending)
+        pending, temporary_image_paths = await self._prepare_records_for_render(pending)
         reminder_text = self._format_template(
             self._config_str(
                 "message",
@@ -720,26 +760,33 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         ).strip()
         blocks = self._build_blocks(pending, target_name, user_id, reverse=False)
         chunks = self._chunk_blocks(blocks)
-        chunks = self._limit_chunks(chunks, self._max_reminder_pages())
+        chunks = self._limit_chunks(chunks, self._max_reminder_pages(), keep_latest=True)
         image_paths: list[str] = []
         sent = False
+        group_name = await self._group_name(event, group_id)
+        member_count = await self._member_count(event, group_id)
+        context_enabled = any(item.get("is_context") for item in pending)
+        render_time = datetime.now().strftime("%H:%M")
+        header_image = self._header_image_url()
+        footer_image = self._footer_image_url()
         try:
-            for idx, chunk in enumerate(chunks, start=1):
-                image_path = await self._render_query_image(
+            image_paths = await self._render_query_images(
+                [
                     {
                         "blocks": chunk,
-                        "group_name": await self._group_name(event, group_id),
-                        "member_count": await self._member_count(event, group_id),
+                        "group_name": group_name,
+                        "member_count": member_count,
                         "target_name": target_name,
                         "total_records": len(pending),
-                        "context_enabled": any(item.get("is_context") for item in pending),
-                        "now": datetime.now().strftime("%H:%M"),
+                        "context_enabled": context_enabled,
+                        "now": render_time,
                         "page_label": "",
-                        "header_image": self._header_image_url(),
-                        "footer_image": self._footer_image_url(),
+                        "header_image": header_image,
+                        "footer_image": footer_image,
                     }
-                )
-                image_paths.append(image_path)
+                    for chunk in chunks
+                ]
+            )
 
             if reminder_text:
                 if not await self._try_send_text_images(event, reminder_text, image_paths):
@@ -761,6 +808,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             if reminder_text and not image_paths:
                 await self._try_send(event, event.plain_result(reminder_text))
             await self._try_send(event, event.plain_result(self._plain_summary(pending, target_name)))
+        finally:
+            self._delete_cached_image_paths(temporary_image_paths)
 
     async def _query(
         self,
@@ -785,11 +834,13 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         query_reverse = self._query_reverse_order()
         records = self._select_query_records(records, target_name, target, reverse=query_reverse)
         records = await self._resolve_record_pokes(event, group_id, records)
+        records, temporary_image_paths = await self._prepare_records_for_render(records)
         blocks = self._build_blocks(records, target_name, target, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_query_pages())
         self._log_query_image_diagnostics(group_id, target, records, page_count=len(chunks))
         if not chunks:
+            self._delete_cached_image_paths(temporary_image_paths)
             return [event.plain_result(self._plain_summary(records, target_name))]
 
         is_self_query = target == self._sender_id(event)
@@ -805,26 +856,34 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 target_pronoun=target_pronoun,
             ).strip()
             if waiting_text and not await self._try_send(event, event.plain_result(waiting_text)):
+                self._delete_cached_image_paths(temporary_image_paths)
                 return [event.plain_result(waiting_text)]
 
         image_paths: list[str] = []
+        group_name = await self._group_name(event, group_id)
+        member_count = await self._member_count(event, group_id)
+        context_enabled = any(item.get("is_context") for item in records)
+        render_time = datetime.now().strftime("%H:%M")
+        header_image = self._header_image_url()
+        footer_image = self._footer_image_url()
         try:
-            for idx, chunk in enumerate(chunks, start=1):
-                image_path = await self._render_query_image(
+            image_paths = await self._render_query_images(
+                [
                     {
                         "blocks": chunk,
-                        "group_name": await self._group_name(event, group_id),
-                        "member_count": await self._member_count(event, group_id),
+                        "group_name": group_name,
+                        "member_count": member_count,
                         "target_name": target_name,
                         "total_records": total_records,
-                        "context_enabled": any(item.get("is_context") for item in records),
-                        "now": datetime.now().strftime("%H:%M"),
+                        "context_enabled": context_enabled,
+                        "now": render_time,
                         "page_label": f"第 {idx} / {len(chunks)} 页" if len(chunks) > 1 else "",
-                        "header_image": self._header_image_url(),
-                        "footer_image": self._footer_image_url(),
+                        "header_image": header_image,
+                        "footer_image": footer_image,
                     }
-                )
-                image_paths.append(image_path)
+                    for idx, chunk in enumerate(chunks, start=1)
+                ]
+            )
 
             if not await self._try_send_images(event, image_paths):
                 for image_path in image_paths:
@@ -833,6 +892,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送图片失败: {exc}")
             await self._try_send(event, event.plain_result(self._plain_summary(records, target_name)))
+        finally:
+            self._delete_cached_image_paths(temporary_image_paths)
 
         return []
 
@@ -1283,10 +1344,16 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             chunks.append(current)
         return chunks
 
-    def _limit_chunks(self, chunks: list[list[dict[str, Any]]], max_pages: int) -> list[list[dict[str, Any]]]:
+    def _limit_chunks(
+        self,
+        chunks: list[list[dict[str, Any]]],
+        max_pages: int,
+        *,
+        keep_latest: bool = False,
+    ) -> list[list[dict[str, Any]]]:
         if max_pages <= 0:
             return chunks
-        return chunks[:max_pages]
+        return chunks[-max_pages:] if keep_latest else chunks[:max_pages]
 
     def _select_query_records(
         self,
@@ -1390,3 +1457,4 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self.before_cache.clear()
         self.after_tasks.clear()
         self.reminder_after_tasks.clear()
+        self._group_pipeline_locks.clear()

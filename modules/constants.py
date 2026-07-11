@@ -3,6 +3,12 @@ from __future__ import annotations
 import re
 
 
+PLUGIN_NAME = "astrbot_plugin_who_at_me_pro"
+LEGACY_PLUGIN_NAME = "astrbot_plugin_who_at_me"
+MAX_IMAGE_SOURCE_BYTES = 20 * 1024 * 1024
+MEMBER_CACHE_TTL_SECONDS = 5 * 60
+
+
 QUERY_PATTERN = re.compile(r"^(谁(艾特|@|at)(我|他|她|它)|哪个逼(艾特|@|at)我)(?:\s*(?:\[CQ:at,[^\]]+\]|@.+))?$", re.I)
 CLEAR_PATTERN = re.compile(r"^(clear_at|清除(艾特|at)数据)$", re.I)
 CLEAR_ALL_PATTERN = re.compile(r"^(clear_all|清除全部(艾特|at)数据)$", re.I)

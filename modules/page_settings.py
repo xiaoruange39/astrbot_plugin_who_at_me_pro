@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,9 @@ try:
         IMAGE_MIME_TYPES,
         LEGACY_FOOTER_IMAGE_URL,
         LEGACY_HEADER_IMAGE_URL,
+        LEGACY_PLUGIN_NAME,
         PAGE_SETTINGS_DEFAULTS,
+        PLUGIN_NAME,
     )
 except ImportError:
     from modules.constants import (
@@ -26,7 +29,9 @@ except ImportError:
         IMAGE_MIME_TYPES,
         LEGACY_FOOTER_IMAGE_URL,
         LEGACY_HEADER_IMAGE_URL,
+        LEGACY_PLUGIN_NAME,
         PAGE_SETTINGS_DEFAULTS,
+        PLUGIN_NAME,
     )
 
 
@@ -51,17 +56,47 @@ class PageSettingsMixin:
         }
 
     def _plugin_data_dir(self) -> Path:
+        cached = getattr(self, "_plugin_data_dir_cache", None)
+        if cached:
+            return Path(cached)
         try:
             from astrbot.api.star import StarTools
 
-            return Path(StarTools.get_data_dir("astrbot_plugin_who_at_me"))
+            target = Path(StarTools.get_data_dir(PLUGIN_NAME))
+            legacy = Path(StarTools.get_data_dir(LEGACY_PLUGIN_NAME))
         except Exception:
             try:
                 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-                return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me"
+                root = Path(get_astrbot_data_path()) / "plugin_data"
             except Exception:
-                return Path.cwd() / "data" / "astrbot_plugin_who_at_me"
+                root = Path.cwd() / "data"
+            target = root / PLUGIN_NAME
+            legacy = root / LEGACY_PLUGIN_NAME
+
+        self._migrate_legacy_plugin_data(legacy, target)
+        target.mkdir(parents=True, exist_ok=True)
+        self._plugin_data_dir_cache = target
+        return target
+
+    def _migrate_legacy_plugin_data(self, legacy: Path, target: Path) -> None:
+        marker = target / ".migrated_from_who_at_me"
+        if marker.exists() or not legacy.exists() or legacy.resolve() == target.resolve():
+            return
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            for source in legacy.iterdir():
+                destination = target / source.name
+                if destination.exists():
+                    continue
+                if source.is_dir():
+                    shutil.copytree(source, destination)
+                elif source.is_file():
+                    shutil.copy2(source, destination)
+            marker.write_text(LEGACY_PLUGIN_NAME, encoding="utf-8")
+            logger.info(f"[who_at_me] migrated plugin data to {target}")
+        except Exception as exc:
+            logger.warning(f"[who_at_me] legacy data migration failed: {exc}")
 
     def _page_settings_file(self) -> Path:
         return self._plugin_data_dir() / "page_settings.json"
