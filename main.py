@@ -85,6 +85,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._message_count_epoch = uuid.uuid4().hex
         self._kv_locks: dict[str, asyncio.Lock] = {}
         self._group_pipeline_locks: dict[str, asyncio.Lock] = {}
+        self._latest_group_activity: dict[tuple[str, str], tuple[int, int | None, int]] = {}
 
     def _group_pipeline_lock(self, group_id: str) -> asyncio.Lock:
         lock = self._group_pipeline_locks.get(group_id)
@@ -155,6 +156,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         group_id = self._group_id(event)
         if group_id:
             self._event_group_message_count(event, group_id)
+            sender_id = self._sender_id(event)
+            if sender_id:
+                self._remember_group_activity(event, group_id, sender_id)
         try:
             setattr(event, "_who_at_me_activity_handled", True)
         except Exception:
@@ -167,6 +171,30 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             except Exception:
                 pass
             logger.error(f"[who_at_me] early activity update failed: {exc}")
+
+    def _remember_group_activity(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
+        self._latest_group_activity[(group_id, user_id)] = (
+            self._timestamp(event),
+            self._event_message_sequence(event),
+            self._event_group_message_count(event, group_id),
+        )
+
+    def _returned_after_mention(self, group_id: str, user_id: str, record: dict[str, Any]) -> bool:
+        activity = self._latest_group_activity.get((group_id, user_id))
+        if activity is None:
+            return False
+
+        activity_time, activity_sequence, activity_count = activity
+        if str(record.get("message_count_epoch") or "") == self._message_count_epoch:
+            mention_count = self._numeric_order(record.get("group_message_count"))
+            if mention_count is not None:
+                return activity_count > mention_count
+
+        mention_sequence = self._numeric_order(record.get("message_sequence"))
+        if activity_sequence is not None and mention_sequence is not None:
+            return activity_sequence > mention_sequence
+
+        return activity_time > self._record_time(record)
 
     @filter.event_message_type(GROUP_NOTICE_EVENT_TYPE, priority=10001)
     async def on_group_notice(self, event: AstrMessageEvent):
@@ -707,26 +735,32 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             pending_record["is_context"] = True
             pending_record["before"] = list(before)
             pending_record["after"] = []
+        if self._returned_after_mention(group_id, target, pending_record):
+            return False
         pending_record = await self._cache_record_images(pending_record)
 
         key = self._reminder_pending_key(group_id, target)
         dropped_records: list[dict[str, Any]] = []
         duplicate = False
+        returned = False
         async with self._data_operation():
             async with self._kv_lock(key):
                 pending = await self._get_pending_reminders(group_id, target)
-                if any(self._records_are_duplicate(item, pending_record) for item in pending):
+                if self._returned_after_mention(group_id, target, pending_record):
+                    returned = True
+                elif any(self._records_are_duplicate(item, pending_record) for item in pending):
                     duplicate = True
                 else:
                     pending.append(pending_record)
                     pending, dropped_records = self._trim_pending_reminders(pending)
                     await self.put_kv_data(key, pending)
-                await self._remember_pending_key(key)
+                if not returned:
+                    await self._remember_pending_key(key)
 
-        if duplicate:
+        if returned or duplicate:
             self._drop_record_image_cache(pending_record, delete_files=True)
         self._drop_records_image_cache(dropped_records, delete_files=True)
-        return not duplicate
+        return not (returned or duplicate)
 
     async def _deliver_pending_reminders(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
         if not await self._reminder_group_enabled(event, group_id):
@@ -1458,3 +1492,4 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self.after_tasks.clear()
         self.reminder_after_tasks.clear()
         self._group_pipeline_locks.clear()
+        self._latest_group_activity.clear()
