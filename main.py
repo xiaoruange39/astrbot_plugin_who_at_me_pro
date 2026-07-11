@@ -296,41 +296,54 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         await self._delete_pending_key(self._reminder_pending_key(group_id, user_id))
 
     async def _delete_record_key(self, key: str) -> bool:
+        async with self._data_maintenance_lock():
+            return await self._delete_record_key_locked(key)
+
+    async def _delete_record_key_locked(self, key: str) -> bool:
         async with self._kv_lock(key):
             records = await self.get_kv_data(key, [])
             has_records = bool(records) if isinstance(records, list) else False
-            self._drop_records_image_cache(records, delete_files=True)
             await self.delete_kv_data(key)
-        await self._forget_index_key(key)
+            await self._forget_index_key(key)
+        self._drop_records_image_cache(records, delete_files=True)
         return has_records
 
     async def _delete_pending_key(self, key: str) -> bool:
+        async with self._data_maintenance_lock():
+            return await self._delete_pending_key_locked(key)
+
+    async def _delete_pending_key_locked(self, key: str) -> bool:
         async with self._kv_lock(key):
             pending = await self.get_kv_data(key, [])
             has_pending = bool(pending) if isinstance(pending, list) else False
-            self._drop_records_image_cache(pending, delete_files=True)
             await self.delete_kv_data(key)
-        await self._forget_pending_key(key)
+            await self._forget_pending_key(key)
+        self._drop_records_image_cache(pending, delete_files=True)
         return has_pending
 
     async def _restore_pending_reminders(self, group_id: str, user_id: str, records: list[dict[str, Any]]) -> None:
         if not records:
             return
         key = self._reminder_pending_key(group_id, user_id)
-        async with self._kv_lock(key):
-            current = await self._get_pending_reminders(group_id, user_id)
-            merged = self._dedupe_records([*current, *records])
-            merged.sort(key=self._record_sort_key)
-            await self.put_kv_data(key, self._trim_pending_reminders(merged))
-        await self._remember_pending_key(key)
+        dropped_records: list[dict[str, Any]] = []
+        async with self._data_maintenance_lock():
+            async with self._kv_lock(key):
+                current = await self._get_pending_reminders(group_id, user_id)
+                merged = self._dedupe_records([*current, *records])
+                merged.sort(key=self._record_sort_key)
+                kept_records, dropped_records = self._trim_pending_reminders(merged)
+                await self.put_kv_data(key, kept_records)
+                await self._remember_pending_key(key)
+        self._drop_records_image_cache(dropped_records, delete_files=True)
 
-    def _trim_pending_reminders(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _trim_pending_reminders(
+        self,
+        records: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         limit = max(1, self._max_pending_reminders())
         if len(records) <= limit:
-            return records
-        dropped = records[:-limit]
-        self._drop_records_image_cache(dropped, delete_files=True)
-        return records[-limit:]
+            return records, []
+        return records[-limit:], records[:-limit]
 
     async def _take_ready_pending_reminders(
         self,
@@ -339,21 +352,22 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         now_time: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         key = self._reminder_pending_key(group_id, user_id)
-        async with self._kv_lock(key):
-            pending = await self._get_pending_reminders(group_id, user_id)
-            if not pending:
-                return [], []
-            pending = self._dedupe_records(pending)
-            away_seconds = self._reminder_away_seconds()
-            ready = [
-                record
-                for record in pending
-                if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds
-            ]
-            if not ready:
-                self._drop_records_image_cache(pending, delete_files=True)
-            await self.delete_kv_data(key)
-        await self._forget_pending_key(key)
+        async with self._data_maintenance_lock():
+            async with self._kv_lock(key):
+                pending = await self._get_pending_reminders(group_id, user_id)
+                if not pending:
+                    return [], []
+                pending = self._dedupe_records(pending)
+                away_seconds = self._reminder_away_seconds()
+                ready = [
+                    record
+                    for record in pending
+                    if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds
+                ]
+                await self.delete_kv_data(key)
+                await self._forget_pending_key(key)
+        if not ready:
+            self._drop_records_image_cache(pending, delete_files=True)
         return ready, pending if ready else []
 
     async def _handle_recall_event(self, event: AstrMessageEvent, group_id: str) -> bool:
@@ -467,8 +481,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         del cache[:-max(self._query_context_max_messages(), self._max_reminder_context())]
 
     async def _append_after_context(self, group_id: str, current: dict[str, Any]) -> None:
-        async with self._kv_lock(f"runtime:after-context:{group_id}"):
-            await self._append_after_context_locked(group_id, current)
+        async with self._data_maintenance_lock():
+            async with self._kv_lock(f"runtime:after-context:{group_id}"):
+                await self._append_after_context_locked(group_id, current)
 
     async def _append_after_context_locked(self, group_id: str, current: dict[str, Any]) -> None:
         tasks = self.after_tasks.get(group_id, [])
@@ -493,8 +508,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 tasks.pop(idx)
 
     async def _append_reminder_after_context(self, group_id: str, current: dict[str, Any]) -> None:
-        async with self._kv_lock(f"runtime:after-context:{group_id}"):
-            await self._append_reminder_after_context_locked(group_id, current)
+        async with self._data_maintenance_lock():
+            async with self._kv_lock(f"runtime:after-context:{group_id}"):
+                await self._append_reminder_after_context_locked(group_id, current)
 
     async def _append_reminder_after_context_locked(self, group_id: str, current: dict[str, Any]) -> None:
         tasks = self.reminder_after_tasks.get(group_id, [])
@@ -543,19 +559,22 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         pending_record = await self._cache_record_images(pending_record)
 
         key = self._reminder_pending_key(group_id, target)
+        dropped_records: list[dict[str, Any]] = []
         duplicate = False
-        async with self._kv_lock(key):
-            pending = await self._get_pending_reminders(group_id, target)
-            if any(self._records_are_duplicate(item, pending_record) for item in pending):
-                duplicate = True
-            else:
-                pending.append(pending_record)
-                pending = self._trim_pending_reminders(pending)
-                await self.put_kv_data(key, pending)
+        async with self._data_maintenance_lock():
+            async with self._kv_lock(key):
+                pending = await self._get_pending_reminders(group_id, target)
+                if any(self._records_are_duplicate(item, pending_record) for item in pending):
+                    duplicate = True
+                else:
+                    pending.append(pending_record)
+                    pending, dropped_records = self._trim_pending_reminders(pending)
+                    await self.put_kv_data(key, pending)
+                await self._remember_pending_key(key)
 
         if duplicate:
             self._drop_record_image_cache(pending_record, delete_files=True)
-        await self._remember_pending_key(key)
+        self._drop_records_image_cache(dropped_records, delete_files=True)
         return not duplicate
 
     async def _deliver_pending_reminders(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
@@ -715,6 +734,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return event.plain_result("已成功清除")
 
     async def _clear_all(self, event: AstrMessageEvent) -> Any:
+        async with self._data_maintenance_lock():
+            return await self._clear_all_locked(event)
+
+    async def _clear_all_locked(self, event: AstrMessageEvent) -> Any:
         keys = await self.get_kv_data(INDEX_KEY, [])
         if not isinstance(keys, list):
             keys = []
@@ -722,7 +745,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         for key in keys:
             if not isinstance(key, str):
                 continue
-            await self._delete_record_key(key)
+            await self._delete_record_key_locked(key)
             if key.startswith("records:"):
                 body = key[len("records:") :]
                 if ":" in body:
@@ -739,7 +762,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         await self.delete_kv_data(CONTEXT_INDEX_KEY)
 
         for key in pending_keys:
-            await self._delete_pending_key(key)
+            await self._delete_pending_key_locked(key)
         await self.delete_kv_data(REMINDER_PENDING_INDEX_KEY)
 
         self.before_cache.clear()
@@ -833,7 +856,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             tag_color = "#f6c751"
         elif role in {"admin", "administrator"}:
             tag_color = "#45d3c9"
-        avatar = f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=100" if user_id.isdigit() else ""
+        avatar = f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=100" if user_id.isdigit() else ""
         return {
             "user_id": user_id,
             "nickname": nickname,
@@ -936,6 +959,20 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         left: dict[str, Any],
         right: dict[str, Any],
     ) -> bool:
+        left_message_id = str(left.get("message_id") or "").strip()
+        right_message_id = str(right.get("message_id") or "").strip()
+        if bool(left_message_id) == bool(right_message_id):
+            return False
+
+        left_received = self._record_received_order(left)
+        right_received = self._record_received_order(right)
+        if (
+            left_received is not None
+            and right_received is not None
+            and abs(left_received - right_received) > 2
+        ):
+            return False
+
         left_payload = self._timeline_payload_tokens(left)
         right_payload = self._timeline_payload_tokens(right)
         if left_payload == right_payload:
@@ -1142,18 +1179,54 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if max_pages <= 0:
             return sorted(records, key=self._record_sort_key, reverse=reverse)
 
+        capacity = max_pages * max(1, self._max_messages_per_image())
         selected: list[dict[str, Any]] = []
+        used_messages = 0
         latest_first = sorted(records, key=self._record_sort_key, reverse=True)
         for record in latest_first:
-            trial = selected + [record]
-            blocks = self._build_blocks(trial, target_name, target_id, reverse=True)
-            if len(self._chunk_blocks(blocks)) > max_pages:
-                if not selected:
-                    selected = trial
+            message_count = self._query_record_message_count(record, target_name, target_id)
+            if used_messages + message_count > capacity:
+                remaining = capacity - used_messages
+                if remaining > 0:
+                    selected.append(self._trim_record_context(record, remaining))
                 break
-            selected = trial
+            selected.append(record)
+            used_messages += message_count
 
         return sorted(selected, key=self._record_sort_key, reverse=reverse)
+
+    def _query_record_message_count(
+        self,
+        record: dict[str, Any],
+        target_name: str,
+        target_id: str,
+    ) -> int:
+        blocks = self._build_blocks([record], target_name, target_id, reverse=True)
+        return sum(len(block.get("msgs") or []) for block in blocks)
+
+    def _trim_record_context(self, record: dict[str, Any], max_messages: int) -> dict[str, Any]:
+        trimmed = dict(record)
+        if max_messages <= 1 or not record.get("is_context"):
+            trimmed["before"] = []
+            trimmed["after"] = []
+            return trimmed
+
+        before = list(record.get("before") or [])
+        after = list(record.get("after") or [])
+        context_limit = max_messages - 1
+        before_limit = min(len(before), (context_limit + 1) // 2)
+        after_limit = min(len(after), context_limit - before_limit)
+        remaining = context_limit - before_limit - after_limit
+        if remaining > 0:
+            extra_before = min(len(before) - before_limit, remaining)
+            before_limit += extra_before
+            remaining -= extra_before
+        if remaining > 0:
+            after_limit += min(len(after) - after_limit, remaining)
+
+        trimmed["before"] = before[-before_limit:] if before_limit else []
+        trimmed["after"] = after[:after_limit]
+        return trimmed
 
     def _dedupe_records(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []

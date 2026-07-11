@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import ipaddress
 import re
@@ -23,6 +24,13 @@ except ImportError:
 
 
 class DataMixin:
+    def _data_maintenance_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_data_maintenance_lock_instance", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(self, "_data_maintenance_lock_instance", lock)
+        return lock
+
     def _kv_lock(self, key: str) -> asyncio.Lock:
         locks = getattr(self, "_kv_locks", None)
         if not isinstance(locks, dict):
@@ -68,8 +76,17 @@ class DataMixin:
         return "database is locked" in str(exc).lower()
 
     async def _append_record(self, group_id: str, target: str, record: dict[str, Any]) -> None:
-        key = self._record_key(group_id, target)
         cached_record = await self._cache_record_images(dict(record))
+        async with self._data_maintenance_lock():
+            await self._append_record_locked(group_id, target, cached_record)
+
+    async def _append_record_locked(
+        self,
+        group_id: str,
+        target: str,
+        cached_record: dict[str, Any],
+    ) -> None:
+        key = self._record_key(group_id, target)
         async with self._kv_lock(key):
             records = await self.get_kv_data(key, [])
             if not isinstance(records, list):
@@ -80,20 +97,20 @@ class DataMixin:
                 if not isinstance(item, dict) or not self._records_are_duplicate(item, cached_record):
                     continue
                 records[index] = self._merge_duplicate_record(item, cached_record)
-                self._prune_record_image_caches(records)
+                pruned_cache_records = self._prune_record_image_caches(records)
                 await self.put_kv_data(key, records)
                 await self._remember_index_key(key)
+                self._drop_records_image_cache(pruned_cache_records, delete_files=True)
                 return
             records.append(cached_record)
             max_records = self._max_records_per_target()
             dropped_records = records[:-max_records]
             records = records[-max_records:]
-            for dropped in dropped_records:
-                if isinstance(dropped, dict):
-                    self._drop_record_image_cache(dropped, delete_files=True)
-            self._prune_record_image_caches(records)
+            pruned_cache_records = self._prune_record_image_caches(records)
             await self.put_kv_data(key, records)
             await self._remember_index_key(key)
+            self._drop_records_image_cache(dropped_records, delete_files=True)
+            self._drop_records_image_cache(pruned_cache_records, delete_files=True)
 
     async def _cache_record_images(self, record: dict[str, Any]) -> dict[str, Any]:
         if self._recent_image_cache_records() <= 0:
@@ -402,20 +419,26 @@ class DataMixin:
             except Exception:
                 return Path.cwd() / "data" / "astrbot_plugin_who_at_me" / "message_images"
 
-    def _prune_record_image_caches(self, records: list[dict[str, Any]]) -> None:
+    def _prune_record_image_caches(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        pruned_cache_records: list[dict[str, Any]] = []
         keep_count = self._recent_image_cache_records()
         if keep_count <= 0:
             for record in records:
-                self._drop_record_image_cache(record, delete_files=True)
-            return
+                if not isinstance(record, dict) or not self._record_has_image_content(record):
+                    continue
+                pruned_cache_records.append(copy.deepcopy(record))
+                self._drop_record_image_cache(record, delete_files=False)
+            return pruned_cache_records
 
         image_records_seen = 0
         for record in reversed(records):
-            if not self._record_has_image_content(record):
+            if not isinstance(record, dict) or not self._record_has_image_content(record):
                 continue
             image_records_seen += 1
             if image_records_seen > keep_count:
-                self._drop_record_image_cache(record, delete_files=True)
+                pruned_cache_records.append(copy.deepcopy(record))
+                self._drop_record_image_cache(record, delete_files=False)
+        return pruned_cache_records
 
     def _record_has_image_content(self, record: dict[str, Any]) -> bool:
         if record.get("images") or record.get("image") or record.get("image_cache"):
@@ -512,6 +535,10 @@ class DataMixin:
         return pending if isinstance(pending, list) else []
 
     async def _remove_recalled_message(self, group_id: str, message_id: str) -> int:
+        async with self._data_maintenance_lock():
+            return await self._remove_recalled_message_locked(group_id, message_id)
+
+    async def _remove_recalled_message_locked(self, group_id: str, message_id: str) -> int:
         message_id = str(message_id or "").strip()
         if not group_id or not message_id:
             return 0
@@ -531,13 +558,23 @@ class DataMixin:
                 records = await self.get_kv_data(key, [])
                 if not isinstance(records, list):
                     continue
-                next_records, count = self._remove_recalled_from_records(records, message_id)
+                removed_cache_records: list[dict[str, Any]] = []
+                next_records, count = self._remove_recalled_from_records(
+                    records,
+                    message_id,
+                    removed_cache_records,
+                )
                 if not count:
                     continue
                 target = key[len(prefix) :]
                 touched_targets.add(target)
                 removed += count
-                await self.put_kv_data(key, next_records)
+                if next_records:
+                    await self.put_kv_data(key, next_records)
+                else:
+                    await self.delete_kv_data(key)
+                    await self._forget_index_key(key)
+                self._drop_records_image_cache(removed_cache_records, delete_files=True)
 
         for target in touched_targets:
             pending_key = self._reminder_pending_key(group_id, target)
@@ -545,7 +582,12 @@ class DataMixin:
                 pending = await self.get_kv_data(pending_key, [])
                 if not isinstance(pending, list):
                     continue
-                next_pending, count = self._remove_recalled_from_records(pending, message_id)
+                removed_cache_records = []
+                next_pending, count = self._remove_recalled_from_records(
+                    pending,
+                    message_id,
+                    removed_cache_records,
+                )
                 if not count:
                     continue
                 removed += count
@@ -553,19 +595,28 @@ class DataMixin:
                     await self.put_kv_data(pending_key, next_pending)
                 else:
                     await self.delete_kv_data(pending_key)
+                    await self._forget_pending_key(pending_key)
+                self._drop_records_image_cache(removed_cache_records, delete_files=True)
 
         cache = self.before_cache.get(group_id, []) if hasattr(self, "before_cache") else []
         if isinstance(cache, list):
-            next_cache, count = self._remove_recalled_from_records(cache, message_id)
+            removed_cache_records = []
+            next_cache, count = self._remove_recalled_from_records(
+                cache,
+                message_id,
+                removed_cache_records,
+            )
             if count:
                 removed += count
                 self.before_cache[group_id] = next_cache
+                self._drop_records_image_cache(removed_cache_records, delete_files=True)
         return removed
 
     def _remove_recalled_from_records(
         self,
         records: list[dict[str, Any]],
         message_id: str,
+        removed_cache_records: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], int]:
         kept: list[dict[str, Any]] = []
         removed = 0
@@ -574,7 +625,7 @@ class DataMixin:
                 kept.append(record)
                 continue
             if self._record_has_message_id(record, message_id):
-                self._drop_record_image_cache(record, delete_files=True)
+                removed_cache_records.append(record)
                 removed += 1
                 continue
 
@@ -583,14 +634,18 @@ class DataMixin:
                 value = item.get(key)
                 if not isinstance(value, list):
                     continue
-                nested, count = self._remove_recalled_from_records(value, message_id)
+                nested, count = self._remove_recalled_from_records(
+                    value,
+                    message_id,
+                    removed_cache_records,
+                )
                 if count:
                     item[key] = nested
                     removed += count
 
             quote = item.get("quote")
             if isinstance(quote, dict) and self._record_has_message_id(quote, message_id):
-                self._drop_record_image_cache({"quote": quote}, delete_files=True)
+                removed_cache_records.append({"quote": quote})
                 item.pop("quote", None)
                 removed += 1
             kept.append(item)
