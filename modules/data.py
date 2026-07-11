@@ -935,6 +935,17 @@ class DataMixin:
     async def _set_reminder_user_enabled(self, group_id: str, user_id: str, enabled: bool) -> None:
         await self.put_kv_data(self._reminder_user_key(group_id, user_id), bool(enabled))
 
+    async def _reminder_last_active(self, group_id: str, user_id: str) -> int:
+        value = await self.get_kv_data(
+            self._reminder_last_active_key(group_id, user_id),
+            0,
+        )
+        try:
+            last_active = int(value)
+        except (TypeError, ValueError):
+            last_active = 0
+        return max(0, last_active)
+
     async def _update_last_active(self, group_id: str, user_id: str, timestamp: int) -> None:
         await self.put_kv_data(self._reminder_last_active_key(group_id, user_id), int(timestamp))
 

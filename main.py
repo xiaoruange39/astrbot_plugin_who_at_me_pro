@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-import time
 from datetime import datetime
 from typing import Any
 
@@ -82,7 +81,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._font_css_cache_value = ""
         self._receive_order = 0
         self._kv_locks: dict[str, asyncio.Lock] = {}
-        self.started_at = int(time.time())
 
     def _register_page_apis(self, context: Context) -> None:
         try:
@@ -373,16 +371,49 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     return [], []
                 pending = self._dedupe_records(pending)
                 away_seconds = self._reminder_away_seconds()
+                fallback_last_active = await self._reminder_last_active(group_id, user_id)
                 ready = [
                     record
                     for record in pending
-                    if away_seconds <= 0 or now_time - self._record_time(record) >= away_seconds
+                    if self._pending_reminder_ready(
+                        record,
+                        now_time,
+                        away_seconds,
+                        fallback_last_active,
+                    )
                 ]
                 await self.delete_kv_data(key)
                 await self._forget_pending_key(key)
         if not ready:
             self._drop_records_image_cache(pending, delete_files=True)
         return ready, pending if ready else []
+
+    def _target_was_away(
+        self,
+        mention_time: int,
+        last_active: int,
+        away_seconds: int,
+    ) -> bool:
+        return away_seconds <= 0 or mention_time - last_active >= away_seconds
+
+    def _pending_reminder_ready(
+        self,
+        record: dict[str, Any],
+        now_time: int,
+        away_seconds: int,
+        fallback_last_active: int,
+    ) -> bool:
+        if away_seconds <= 0:
+            return True
+        mention_time = self._record_time(record)
+        try:
+            last_active = int(record.get("target_last_active", fallback_last_active))
+        except (TypeError, ValueError):
+            last_active = fallback_last_active
+        return (
+            self._target_was_away(mention_time, last_active, away_seconds)
+            and now_time - mention_time >= away_seconds
+        )
 
     async def _handle_recall_event(self, event: AstrMessageEvent, group_id: str) -> bool:
         message_id = self._recall_message_id(event)
@@ -589,8 +620,15 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if not await self._reminder_user_enabled(group_id, target):
             return False
 
+        mention_time = self._record_time(record)
+        away_seconds = self._reminder_away_seconds()
+        target_last_active = await self._reminder_last_active(group_id, target)
+        if not self._target_was_away(mention_time, target_last_active, away_seconds):
+            return False
+
         pending_record = dict(record)
         pending_record["target"] = target
+        pending_record["target_last_active"] = target_last_active
         if context_config.get("enabled"):
             pending_record["is_context"] = True
             pending_record["before"] = list(before)
