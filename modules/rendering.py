@@ -45,6 +45,36 @@ class RenderingMixin:
                 )
         return await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout)
 
+    async def _render_query_images(self, items: list[dict[str, Any]]) -> list[str]:
+        if not items:
+            return []
+        prepared = []
+        for item in items:
+            data = dict(item)
+            data.setdefault("layout", self._render_layout())
+            data.setdefault("custom_font_css", self._custom_font_css())
+            prepared.append(data)
+
+        timeout = self._render_task_timeout_sec()
+        if self._config_bool("render", "prefer_browser", default=True):
+            try:
+                return await asyncio.wait_for(
+                    self._render_html_pages_with_browser(HTML_TEMPLATE, prepared),
+                    timeout=timeout * len(prepared),
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[who_at_me] batched browser render timed out; falling back to html_render")
+            except Exception as exc:
+                logger.warning(
+                    f"[who_at_me] batched browser render failed; falling back to html_render: {type(exc).__name__}: {exc}",
+                    exc_info=True,
+                )
+
+        result = []
+        for data in prepared:
+            result.append(await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout))
+        return result
+
     async def _try_send(self, event: AstrMessageEvent, result: Any) -> bool:
         try:
             await event.send(result)
@@ -167,6 +197,58 @@ class RenderingMixin:
                 return Path(image_path).resolve().as_uri()
             except Exception:
                 return image_path
+
+    async def _render_html_pages_with_browser(
+        self,
+        template: str,
+        items: list[dict[str, Any]],
+    ) -> list[str]:
+        from jinja2 import Environment
+        from playwright.async_api import async_playwright
+
+        self._cleanup_old_renders()
+        renderer = Environment(autoescape=True).from_string(template)
+        output_paths = []
+        browser = None
+        async with async_playwright() as playwright:
+            try:
+                browser = await playwright.chromium.launch(
+                    args=["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"]
+                )
+                for data in items:
+                    page = await browser.new_page(
+                        viewport={"width": 600, "height": 800},
+                        device_scale_factor=2,
+                    )
+                    output_path = self._new_render_path()
+                    try:
+                        await page.set_content(
+                            renderer.render(**data),
+                            wait_until="domcontentloaded",
+                            timeout=self._render_page_timeout_ms(),
+                        )
+                        await self._wait_for_browser_assets(page)
+                        element = await page.query_selector(".app")
+                        if element:
+                            await element.screenshot(
+                                path=str(output_path),
+                                type="jpeg",
+                                quality=self._render_quality(),
+                            )
+                        else:
+                            await page.screenshot(
+                                path=str(output_path),
+                                type="jpeg",
+                                quality=self._render_quality(),
+                                full_page=True,
+                            )
+                        output_paths.append(str(output_path))
+                    finally:
+                        await page.close()
+            finally:
+                if browser:
+                    await browser.close()
+        return output_paths
 
     async def _render_html_with_browser(self, template: str, data: dict[str, Any]) -> str:
         from jinja2 import Environment
@@ -423,14 +505,14 @@ class RenderingMixin:
         try:
             from astrbot.api.star import StarTools
 
-            return Path(StarTools.get_data_dir("astrbot_plugin_who_at_me")) / "renders"
+            return Path(StarTools.get_data_dir(PLUGIN_NAME)) / "renders"
         except Exception:
             try:
                 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-                return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me" / "renders"
+                return Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME / "renders"
             except Exception:
-                return Path.cwd() / "data" / "astrbot_plugin_who_at_me" / "renders"
+                return Path.cwd() / "data" / PLUGIN_NAME / "renders"
 
     def _cleanup_old_renders(self) -> None:
         render_dir = self._render_dir()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -305,7 +306,6 @@ class MessageMixin:
                 data = segment.get("data") or {}
                 value = data.get("qq") or data.get("user_id") or data.get("target") or data.get("id")
                 self._append_mention(result, value)
-            return list(dict.fromkeys(result))
 
         for item in self._message_chain(event):
             if self._is_reference_segment(item):
@@ -345,23 +345,35 @@ class MessageMixin:
             text = str(image or "").strip()
             if not text:
                 continue
-            renderable = self._renderable_image(text)
-            if renderable:
-                result.append(renderable)
+            validated = await self._validated_message_image_source(text)
+            if validated:
+                result.append(validated)
                 continue
             if not self._can_resolve_onebot_image_source(text):
                 continue
             resolved = await self._resolve_onebot_image(event, text)
-            if resolved:
-                result.append(resolved)
+            validated = await self._validated_message_image_source(resolved)
+            if validated:
+                result.append(validated)
         return self._unique_strings(result)
+
+    async def _validated_message_image_source(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if re.match(r"^https?://", text, re.I):
+            allowed = await asyncio.to_thread(self._is_allowed_remote_image_url, text)
+            return text if allowed else ""
+        if text.startswith("base64://") or re.match(r"^data:image/", text, re.I):
+            return text if self._inline_image_source_within_limit(text) else ""
+        return self._renderable_image(text)
 
     def _can_resolve_onebot_image_source(self, value: str) -> bool:
         text = str(value or "").strip()
         if not text:
             return False
         if re.match(r"^https?://", text, re.I):
-            return self._is_allowed_remote_image_url(text)
+            return False
         if re.match(r"^file://", text, re.I):
             return False
         try:
@@ -1265,8 +1277,10 @@ class MessageMixin:
         for value in values:
             if self._is_reference_segment(value):
                 continue
-            text = self._debug_text(value).lower()
-            if any(token in text for token in ("image", "picture", "photo", "media_image", ".jpg", ".jpeg", ".png", ".webp", ".gif")):
+            if not isinstance(value, str) and self._segment_type(value) in IMAGE_SEGMENT_TYPES:
+                return True
+            text = str(value or "")
+            if re.search(r"\[CQ:(?:image|picture|photo|mface|market_face)\b", text, re.I):
                 return True
         return False
 
@@ -1518,7 +1532,7 @@ class MessageMixin:
         if not value:
             return ""
         if re.match(r"^https?://", value, re.I):
-            return value if self._is_allowed_remote_image_url(value) else ""
+            return ""
         if re.match(r"^file://", value, re.I):
             return self._file_uri_media_source(value)
         try:
@@ -1564,11 +1578,11 @@ class MessageMixin:
         if not value:
             return ""
         if re.match(r"^https?://", value, re.I):
-            return value if self._is_allowed_remote_image_url(value) else ""
+            return ""
         if re.match(r"^data:image/", value, re.I):
-            return value
+            return ""
         if value.startswith("base64://"):
-            return "data:image/png;base64," + value[len("base64://") :]
+            return ""
         if re.match(r"^file://", value, re.I):
             return self._file_uri_image_data(value)
         try:

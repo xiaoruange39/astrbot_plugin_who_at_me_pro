@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from astrbot.api import logger
 
@@ -22,6 +22,11 @@ try:
     from .constants import *
 except ImportError:
     from modules.constants import *
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class DataMixin:
@@ -186,8 +191,8 @@ class DataMixin:
             self._drop_records_image_cache(dropped_records, delete_files=True)
             self._drop_records_image_cache(pruned_cache_records, delete_files=True)
 
-    async def _cache_record_images(self, record: dict[str, Any]) -> dict[str, Any]:
-        if self._recent_image_cache_records() <= 0:
+    async def _cache_record_images(self, record: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
+        if self._recent_image_cache_records() <= 0 and not force:
             self._drop_record_image_cache(record, delete_files=False)
             return record
 
@@ -208,7 +213,7 @@ class DataMixin:
             cached_items = []
             for item in items:
                 if isinstance(item, dict):
-                    cached_items.append(await self._cache_record_images(dict(item)))
+                    cached_items.append(await self._cache_record_images(dict(item), force=force))
                 else:
                     cached_items.append(item)
             record[key] = cached_items
@@ -217,6 +222,11 @@ class DataMixin:
     async def _cache_record_direct_images(self, record: dict[str, Any]) -> None:
         cache = record.get("image_cache")
         existing_cache = self._dedupe_image_cache_entries(list(cache) if isinstance(cache, list) else [])
+        existing_cache = [
+            item
+            for item in existing_cache
+            if str(item.get("local") or "").strip() and Path(str(item["local"])).is_file()
+        ]
         cached_sources = {
             str(item.get("source") or "").strip()
             for item in existing_cache
@@ -243,6 +253,56 @@ class DataMixin:
         new_cache = await self._cache_images(candidates, existing_hashes=cached_hashes)
         if existing_cache or new_cache:
             record["image_cache"] = self._dedupe_image_cache_entries([*existing_cache, *new_cache])
+        else:
+            record.pop("image_cache", None)
+
+    async def _prepare_records_for_render(
+        self,
+        records: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        prepared = []
+        temporary_paths: set[str] = set()
+        for record in records:
+            copied = copy.deepcopy(record)
+            original_paths = self._record_image_cache_paths(copied)
+            copied = await self._cache_record_images(copied, force=True)
+            temporary_paths.update(self._record_image_cache_paths(copied) - original_paths)
+            prepared.append(copied)
+        return prepared, temporary_paths
+
+    def _record_image_cache_paths(self, record: dict[str, Any]) -> set[str]:
+        result: set[str] = set()
+
+        def collect(entries: Any) -> None:
+            if not isinstance(entries, list):
+                return
+            for entry in entries:
+                if isinstance(entry, dict):
+                    local = str(entry.get("local") or "").strip()
+                    if local:
+                        result.add(local)
+
+        collect(record.get("image_cache"))
+        quote = record.get("quote")
+        if isinstance(quote, dict):
+            collect(quote.get("image_cache"))
+        media = record.get("media")
+        if isinstance(media, list):
+            for item in media:
+                if isinstance(item, dict):
+                    cache = item.get("cover_cache")
+                    collect([cache] if isinstance(cache, dict) else cache)
+        for key in ("before", "after"):
+            items = record.get(key)
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        result.update(self._record_image_cache_paths(item))
+        return result
+
+    def _delete_cached_image_paths(self, paths: set[str]) -> None:
+        for path in paths:
+            self._delete_cached_image(path)
 
     async def _cache_media_covers(self, record: dict[str, Any]) -> None:
         media = record.get("media")
@@ -362,15 +422,16 @@ class DataMixin:
             if not self._is_allowed_remote_image_url(value):
                 return b"", ""
             request = Request(value, headers={"User-Agent": "Mozilla/5.0"})
-            with urlopen(request, timeout=10) as response:
+            opener = build_opener(_NoRedirectHandler())
+            with opener.open(request, timeout=10) as response:
                 image_type = str(response.headers.get("Content-Type") or "")
-                return self._read_limited_bytes(response), image_type
+                if image_type and not image_type.lower().startswith("image/"):
+                    return b"", ""
+                return self._read_limited_bytes(response, MAX_IMAGE_SOURCE_BYTES), image_type
         if value.startswith("base64://"):
-            return base64.b64decode(value[len("base64://") :]), "png"
+            return self._decode_inline_image(value)
         if value.lower().startswith("data:image/"):
-            header, payload = value.split(",", 1)
-            image_type = header.split(";", 1)[0].rsplit("/", 1)[-1]
-            return base64.b64decode(payload), image_type
+            return self._decode_inline_image(value)
         if re.match(r"^file://", value, re.I):
             parsed = urlparse(value)
             path_text = unquote(parsed.path or "")
@@ -382,6 +443,39 @@ class DataMixin:
         if path.exists():
             return self._read_local_image_path(path)
         return b"", ""
+
+    def _inline_image_source_within_limit(self, value: str) -> bool:
+        text = str(value or "").strip()
+        if text.startswith("base64://"):
+            payload = text[len("base64://") :]
+        elif text.lower().startswith("data:image/") and "," in text:
+            header, payload = text.split(",", 1)
+            if ";base64" not in header.lower():
+                return False
+        else:
+            return False
+        encoded_limit = ((MAX_IMAGE_SOURCE_BYTES + 2) // 3) * 4
+        return len(re.sub(r"\s+", "", payload)) <= encoded_limit
+
+    def _decode_inline_image(self, value: str) -> tuple[bytes, str]:
+        text = str(value or "").strip()
+        image_type = "png"
+        if text.startswith("base64://"):
+            payload = text[len("base64://") :]
+        elif text.lower().startswith("data:image/") and "," in text:
+            header, payload = text.split(",", 1)
+            if ";base64" not in header.lower():
+                return b"", ""
+            image_type = header.split(";", 1)[0].rsplit("/", 1)[-1]
+        else:
+            return b"", ""
+        payload = re.sub(r"\s+", "", payload)
+        if not self._inline_image_source_within_limit(text):
+            raise ValueError("inline image is too large")
+        data = base64.b64decode(payload, validate=True)
+        if len(data) > MAX_IMAGE_SOURCE_BYTES:
+            raise ValueError("inline image is too large")
+        return data, image_type
 
     def _is_allowed_remote_image_url(self, value: str) -> bool:
         parsed = urlparse(value)
@@ -411,7 +505,10 @@ class DataMixin:
             resolved = path.expanduser().resolve()
             if not resolved.is_file() or not self._is_allowed_local_image_path(resolved):
                 return b"", ""
-            return resolved.read_bytes(), resolved.suffix
+            if resolved.stat().st_size > MAX_IMAGE_SOURCE_BYTES:
+                return b"", ""
+            data = resolved.read_bytes()
+            return (data, resolved.suffix) if len(data) <= MAX_IMAGE_SOURCE_BYTES else (b"", "")
         except OSError:
             return b"", ""
 
@@ -441,7 +538,10 @@ class DataMixin:
                 continue
         return allowed
 
-    def _read_limited_bytes(self, response: Any, max_bytes: int = 20 * 1024 * 1024) -> bytes:
+    def _read_limited_bytes(self, response: Any, max_bytes: int = MAX_IMAGE_SOURCE_BYTES) -> bytes:
+        content_length = str(response.headers.get("Content-Length") or "").strip()
+        if content_length.isdigit() and int(content_length) > max_bytes:
+            raise ValueError("image is too large")
         chunks = []
         total = 0
         while True:
@@ -484,14 +584,14 @@ class DataMixin:
         try:
             from astrbot.api.star import StarTools
 
-            return Path(StarTools.get_data_dir("astrbot_plugin_who_at_me")) / "message_images"
+            return Path(StarTools.get_data_dir(PLUGIN_NAME)) / "message_images"
         except Exception:
             try:
                 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-                return Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_who_at_me" / "message_images"
+                return Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME / "message_images"
             except Exception:
-                return Path.cwd() / "data" / "astrbot_plugin_who_at_me" / "message_images"
+                return Path.cwd() / "data" / PLUGIN_NAME / "message_images"
 
     def _prune_record_image_caches(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         pruned_cache_records: list[dict[str, Any]] = []
@@ -618,7 +718,6 @@ class DataMixin:
             return 0
 
         removed = 0
-        touched_targets: set[str] = set()
         async with self._kv_lock(INDEX_KEY):
             keys = await self.get_kv_data(INDEX_KEY, [])
         if not isinstance(keys, list):
@@ -640,8 +739,6 @@ class DataMixin:
                 )
                 if not count:
                     continue
-                target = key[len(prefix) :]
-                touched_targets.add(target)
                 removed += count
                 if next_records:
                     await self.put_kv_data(key, next_records)
@@ -650,8 +747,15 @@ class DataMixin:
                     await self._forget_index_key(key)
                 self._drop_records_image_cache(removed_cache_records, delete_files=True)
 
-        for target in touched_targets:
-            pending_key = self._reminder_pending_key(group_id, target)
+        async with self._kv_lock(REMINDER_PENDING_INDEX_KEY):
+            pending_keys = await self.get_kv_data(REMINDER_PENDING_INDEX_KEY, [])
+        if not isinstance(pending_keys, list):
+            pending_keys = []
+        pending_prefix = f"reminder:pending:{group_id}:"
+
+        for pending_key in list(pending_keys):
+            if not isinstance(pending_key, str) or not pending_key.startswith(pending_prefix):
+                continue
             async with self._kv_lock(pending_key):
                 pending = await self.get_kv_data(pending_key, [])
                 if not isinstance(pending, list):
@@ -744,15 +848,27 @@ class DataMixin:
             info.setdefault("nickname", sender_name)
         if not self._member_info_has_name(info):
             return
-        await self._remember_member_info(group_id, user_id, info)
+        await self._remember_member_info(group_id, user_id, info, complete=bool(info.get("role")))
 
-    async def _remember_member_info(self, group_id: str, user_id: str, info: dict[str, Any]) -> None:
+    async def _remember_member_info(
+        self,
+        group_id: str,
+        user_id: str,
+        info: dict[str, Any],
+        *,
+        complete: bool = False,
+    ) -> None:
         if not group_id or not user_id or not isinstance(info, dict):
             return
         data = {
             "card": str(info.get("card") or ""),
             "nickname": str(info.get("nickname") or info.get("name") or ""),
             "name": str(info.get("name") or ""),
+            "role": str(info.get("role") or ""),
+            "level": str(info.get("level") or ""),
+            "title": str(info.get("title") or ""),
+            "member_title": str(info.get("member_title") or ""),
+            "complete": bool(complete),
             "time": int(time.time()),
         }
         if not self._member_info_has_name(data):
@@ -776,9 +892,14 @@ class DataMixin:
             return info
         cached = await self._cached_member_info(group_id, user_id)
         for key, value in cached.items():
-            if value and not info.get(key):
+            if key not in {"time", "complete"} and value and not info.get(key):
                 info[key] = value
-        if self._member_info_has_name(info) and info.get("level") and info.get("role") and (info.get("title") or info.get("member_title")):
+        cache_time = int(cached.get("time") or 0)
+        if (
+            self._member_info_has_name(info)
+            and bool(cached.get("complete"))
+            and time.time() - cache_time <= MEMBER_CACHE_TTL_SECONDS
+        ):
             return info
 
         api_info = await self._call_onebot_action(
@@ -796,7 +917,7 @@ class DataMixin:
             if list_info:
                 info.update(list_info)
         if self._member_info_has_name(info):
-            await self._remember_member_info(group_id, user_id, info)
+            await self._remember_member_info(group_id, user_id, info, complete=True)
         return info
 
     async def _member_info_from_group_member_list(
