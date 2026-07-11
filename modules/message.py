@@ -1759,7 +1759,7 @@ class MessageMixin:
         except (TypeError, ValueError):
             return int(time.time())
 
-    def _is_admin(self, event: AstrMessageEvent) -> bool:
+    def _is_bot_admin(self, event: AstrMessageEvent) -> bool:
         for name in ("is_admin", "isAdmin", "is_master", "isMaster"):
             checker = getattr(event, name, None)
             if callable(checker):
@@ -1770,6 +1770,12 @@ class MessageMixin:
                     pass
             elif checker:
                 return True
+
+        return False
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        if self._is_bot_admin(event):
+            return True
 
         sender = getattr(event.message_obj, "sender", None)
         role = str(getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "").lower()

@@ -207,8 +207,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             return [await self._clear_self(event, group_id)]
 
         if CLEAR_ALL_PATTERN.match(stripped):
-            if not self._is_admin(event):
-                return [event.plain_result("只有管理员可以清除全部艾特数据")]
+            if not self._is_bot_admin(event):
+                return [event.plain_result("只有 AstrBot 管理员或主人可以清除全部艾特数据")]
             return [await self._clear_all(event)]
 
         if CONTEXT_ON_PATTERN.match(stripped):
@@ -321,8 +321,16 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             current = await self._get_pending_reminders(group_id, user_id)
             merged = self._dedupe_records([*current, *records])
             merged.sort(key=self._record_sort_key)
-            await self.put_kv_data(key, merged[-self._max_pending_reminders():])
+            await self.put_kv_data(key, self._trim_pending_reminders(merged))
         await self._remember_pending_key(key)
+
+    def _trim_pending_reminders(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        limit = max(1, self._max_pending_reminders())
+        if len(records) <= limit:
+            return records
+        dropped = records[:-limit]
+        self._drop_records_image_cache(dropped, delete_files=True)
+        return records[-limit:]
 
     async def _take_ready_pending_reminders(
         self,
@@ -542,7 +550,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 duplicate = True
             else:
                 pending.append(pending_record)
-                pending = pending[-self._max_pending_reminders():]
+                pending = self._trim_pending_reminders(pending)
                 await self.put_kv_data(key, pending)
 
         if duplicate:
@@ -896,9 +904,66 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 continue
             seen[key] = self._merge_timeline_message(existing, msg)
 
-        result = [seen[key] for key in order]
+        result = self._merge_complementary_timeline_messages([seen[key] for key in order])
         result.sort(key=self._message_sort_key, reverse=reverse)
         return result
+
+    def _merge_complementary_timeline_messages(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        candidates: dict[tuple[Any, ...], list[int]] = {}
+        for msg in messages:
+            loose_key = self._timeline_loose_message_key(msg)
+            merged = False
+            if loose_key:
+                for index in reversed(candidates.get(loose_key, [])):
+                    if not self._timeline_messages_are_complementary(result[index], msg):
+                        continue
+                    result[index] = self._merge_timeline_message(result[index], msg)
+                    merged = True
+                    break
+            if merged:
+                continue
+            if loose_key:
+                candidates.setdefault(loose_key, []).append(len(result))
+            result.append(msg)
+        return result
+
+    def _timeline_messages_are_complementary(
+        self,
+        left: dict[str, Any],
+        right: dict[str, Any],
+    ) -> bool:
+        left_payload = self._timeline_payload_tokens(left)
+        right_payload = self._timeline_payload_tokens(right)
+        if left_payload == right_payload:
+            return False
+        return left_payload < right_payload or right_payload < left_payload
+
+    def _timeline_payload_tokens(self, msg: dict[str, Any]) -> frozenset[tuple[Any, ...]]:
+        tokens: set[tuple[Any, ...]] = {
+            ("image", str(image))
+            for image in (msg.get("images") or [])
+            if str(image or "").strip()
+        }
+        for item in msg.get("media") or []:
+            if not isinstance(item, dict):
+                continue
+            tokens.add(
+                (
+                    "media",
+                    str(item.get("type") or ""),
+                    str(item.get("source") or ""),
+                    str(item.get("cover") or ""),
+                    str(item.get("title") or ""),
+                )
+            )
+        after_image_text = str(msg.get("message_after_images_html") or "").strip()
+        if after_image_text:
+            tokens.add(("message_after_images", after_image_text))
+        return frozenset(tokens)
 
     def _timeline_message_visible(self, msg: dict[str, Any]) -> bool:
         return bool(
@@ -912,9 +977,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         )
 
     def _timeline_message_key(self, msg: dict[str, Any]) -> tuple[Any, ...]:
-        loose_key = self._timeline_loose_message_key(msg)
-        if loose_key:
-            return loose_key
         message_id = str(msg.get("message_id") or "")
         if message_id:
             return ("message_id", message_id)
@@ -1043,9 +1105,18 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         chunks: list[list[dict[str, Any]]] = []
         current: list[dict[str, Any]] = []
         count = 0
+        max_messages = max(1, self._max_messages_per_image())
+        split_blocks: list[dict[str, Any]] = []
         for block in blocks:
+            messages = list(block.get("msgs") or [])
+            for start in range(0, len(messages), max_messages):
+                split_block = dict(block)
+                split_block["msgs"] = messages[start : start + max_messages]
+                split_blocks.append(split_block)
+
+        for block in split_blocks:
             size = len(block["msgs"])
-            if current and count + size > self._max_messages_per_image():
+            if current and count + size > max_messages:
                 chunks.append(current)
                 current = []
                 count = 0
