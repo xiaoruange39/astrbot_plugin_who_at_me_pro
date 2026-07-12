@@ -514,6 +514,36 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             return 0
         return max(0, current_message_count - mention_count - 1)
 
+    async def _return_message_targets(self, event: AstrMessageEvent) -> set[str]:
+        targets = {str(user_id) for user_id in self._mentions(event) if str(user_id)}
+        try:
+            quote = await self._quote(event)
+            if quote and not quote.get("user_id") and quote.get("message_id"):
+                fetched = await self._fetch_quote_message(event, str(quote["message_id"]))
+                if fetched:
+                    quote = {**quote, **fetched}
+        except Exception as exc:
+            logger.warning(f"[who_at_me] failed to resolve return-message quote: {exc}")
+            quote = None
+        quoted_user_id = str((quote or {}).get("user_id") or "")
+        if quoted_user_id:
+            targets.add(quoted_user_id)
+        return targets
+
+    @staticmethod
+    def _exclude_answered_reminders(
+        records: list[dict[str, Any]],
+        answered_user_ids: set[str],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not answered_user_ids:
+            return records, []
+        kept = []
+        skipped = []
+        for record in records:
+            destination = skipped if str(record.get("user_id") or "") in answered_user_ids else kept
+            destination.append(record)
+        return kept, skipped
+
     async def _handle_recall_event(self, event: AstrMessageEvent, group_id: str) -> bool:
         message_id = self._recall_message_id(event)
         if not message_id:
@@ -777,6 +807,20 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             self._event_group_message_count(event, group_id),
         )
         if not pending:
+            return
+
+        answered_user_ids = await self._return_message_targets(event)
+        pending, skipped_pending = self._exclude_answered_reminders(pending, answered_user_ids)
+        original_pending, skipped_original = self._exclude_answered_reminders(
+            original_pending,
+            answered_user_ids,
+        )
+        self._drop_records_image_cache(
+            self._dedupe_records([*skipped_pending, *skipped_original]),
+            delete_files=True,
+        )
+        if not pending:
+            self._drop_records_image_cache(original_pending, delete_files=True)
             return
 
         pending.sort(key=self._record_sort_key)
