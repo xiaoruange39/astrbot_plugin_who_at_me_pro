@@ -1,4 +1,8 @@
+![:name](https://count.getloli.com/@astrbot_plugin_who_at_me_pro?name=astrbot_plugin_who_at_me_pro&theme=green&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto&prefix=0)
+
 # astrbot_plugin_who_at_me_pro
+
+记录群聊里谁艾特过你，并渲染一张精美的图片，支持艾特提醒，避免错过重要消息。
 
 [![pms6CJ1.md.png](https://s41.ax1x.com/2026/07/11/pms6CJ1.md.png)](https://imgchr.com/i/pms6CJ1)
 
