@@ -360,7 +360,7 @@ class DataMixin:
             output.write_bytes(data)
             return {"source": source, "local": str(output), "hash": digest}
         except Exception as exc:
-            logger.debug(f"[璋佽壘鐗规垜] 缂撳瓨娑堟伅鍥剧墖澶辫触: {type(exc).__name__}: {exc}")
+            logger.debug(f"[谁艾特我] 缓存消息图片失败: {type(exc).__name__}: {exc}")
             return None
 
     def _dedupe_image_cache_entries(self, entries: list[Any]) -> list[dict[str, str]]:
@@ -699,36 +699,32 @@ class DataMixin:
             path = path.parent
 
     async def _cleanup_expired_image_caches(self, hours: int = 24) -> int:
-        \"\"\"
+        """
         清理过期的图片缓存，hours 为保留小时数（目前按天级文件夹清理）
-        \"\"\"
+        """
         try:
             cache_dir = self._message_image_cache_dir()
             if not cache_dir.exists() or not cache_dir.is_dir():
                 return 0
 
-            # 计算 24 小时前的时间字符串 (YYYYMMDD)
             cutoff_ts = time.time() - (hours * 3600)
             cutoff_date_str = datetime.fromtimestamp(cutoff_ts).strftime("%Y%m%d")
             
             removed_count = 0
 
-            # 遍历日期目录 (格式: YYYYMMDD)
             for item in cache_dir.iterdir():
                 if not item.is_dir() or not re.match(r"^\d{8}$", item.name):
                     continue
 
-                # 如果文件夹名称（日期）早于截止日期字符串，说明是过期文件夹
                 if item.name < cutoff_date_str:
                     try:
-                        # 异步删除整个目录
                         await asyncio.to_thread(self._delete_directory_recursive, item)
                         removed_count += 1
                     except Exception:
                         continue
 
             if removed_count > 0:
-                logger.info(f"[谁艾特我] 已清理 {removed_count} 个 24 小时前的过期图片缓存目录")
+                logger.info(f"[谁艾特我] 已清理 {removed_count} 个 {hours} 小时前的过期图片缓存目录")
             return removed_count
         except Exception as exc:
             logger.debug(f"[谁艾特我] 清理过期缓存失败: {exc}")
@@ -749,7 +745,6 @@ class DataMixin:
             path.rmdir()
         except OSError:
             pass
-
 
     async def _get_records(self, group_id: str, target: str) -> list[dict[str, Any]]:
         records = await self.get_kv_data(self._record_key(group_id, target), [])
@@ -1137,27 +1132,27 @@ class DataMixin:
     async def _reminder_status_text(self, event: AstrMessageEvent, group_id: str) -> str:
         sender_id = self._sender_id(event)
         context_config = await self._reminder_context_config(group_id)
-        group_status = "寮€鍚? if await self._reminder_group_enabled(event, group_id) else "鍏抽棴"
-        user_status = "寮€鍚? if await self._reminder_user_enabled(group_id, sender_id) else "鍏抽棴"
-        context_status = "寮€鍚? if context_config.get("enabled") else "鍏抽棴"
+        group_status = "开启" if await self._reminder_group_enabled(event, group_id) else "关闭"
+        user_status = "开启" if await self._reminder_user_enabled(group_id, sender_id) else "关闭"
+        context_status = "开启" if context_config.get("enabled") else "关闭"
         pending_count = len(await self._get_pending_reminders(group_id, sender_id)) if sender_id else 0
         current_umo = self._event_umo(event)
         global_umos = self._global_enabled_group_umos()
         enabled_umos = self._reminder_enabled_group_umos()
-        global_status = "鏈厤缃悕鍗? if not global_umos else ("宸插懡涓? if current_umo in global_umos else "鏈懡涓?)
-        umo_status = "鏈厤缃悕鍗? if not enabled_umos else ("宸插懡涓? if current_umo in enabled_umos else "鏈懡涓?)
+        global_status = "未配置名单" if not global_umos else ("已命中" if current_umo in global_umos else "未命中")
+        umo_status = "未配置名单" if not enabled_umos else ("已命中" if current_umo in enabled_umos else "未命中")
         user_rule_status = self._reminder_user_rule_status(sender_id)
         return (
-            "鑹剧壒鎻愰啋鐘舵€侊細\n"
-            f"鏈兢鎻愰啋锛歿group_status}\n"
-            f"褰撳墠 UMO锛歿current_umo or '鏈煡'}\n"
-            f"鍏ㄥ眬鐧藉悕鍗曪細{global_status}\n"
-            f"UMO 鍚嶅崟锛歿umo_status}\n"
-            f"鐢ㄦ埛鍚嶅崟锛歿user_rule_status}\n"
-            f"浣犵殑鎻愰啋锛歿user_status}\n"
-            f"鎻愰啋涓婁笅鏂囷細{context_status}锛堝墠 {context_config.get('before', 0)} / 鍚?{context_config.get('after', 0)}锛塡n"
-            f"鎻愰啋鏉′欢锛氳壘鐗瑰悗 {self._reminder_away_seconds() // 60} 鍒嗛挓锛屼笖鏈熼棿鑷冲皯 {self._reminder_min_messages()} 鏉＄兢娑堟伅\n"
-            f"寰呮彁閱掕褰曪細{pending_count} 鏉?
+            "艾特提醒状态：\n"
+            f"本群提醒：{group_status}\n"
+            f"当前 UMO：{current_umo or '未知'}\n"
+            f"全局白名单：{global_status}\n"
+            f"UMO 名单：{umo_status}\n"
+            f"用户名单：{user_rule_status}\n"
+            f"你的提醒：{user_status}\n"
+            f"提醒上下文：{context_status}（前 {context_config.get('before', 0)} / 后 {context_config.get('after', 0)}）\n"
+            f"提醒条件：艾特后 {self._reminder_away_seconds() // 60} 分钟，且期间至少 {self._reminder_min_messages()} 条群消息\n"
+            f"待提醒记录：{pending_count} 条"
         )
 
     async def _context_enabled(self, group_id: str) -> bool:
@@ -1233,7 +1228,7 @@ class DataMixin:
             if sender_name and not self._looks_like_numeric_id(sender_name):
                 return sender_name
         if target == ALL_TARGET:
-            return "鍏ㄤ綋鎴愬憳"
+            return "全体成员"
         mention_name = self._mention_display_name(event, target)
         if mention_name:
             return mention_name
@@ -1352,7 +1347,7 @@ class DataMixin:
                 name = str(candidate)
                 self.bot_name_cache[cache_key] = name
                 return name
-        return "鎴?
+        return "我"
 
     async def _bot_name_from_api(self, event: AstrMessageEvent, group_id: str) -> str:
         self_id = self._self_id(event)
@@ -1386,7 +1381,7 @@ class DataMixin:
         try:
             return await getter(group_id)
         except Exception as exc:
-            logger.debug(f"[璋佽壘鐗规垜] 鑾峰彇缇や俊鎭け璐? {exc}")
+            logger.debug(f"[谁艾特我] 获取群信息失败: {exc}")
             return None
 
     async def _call_onebot_action(self, event: AstrMessageEvent, action: str, **kwargs) -> Any:
@@ -1406,9 +1401,9 @@ class DataMixin:
             try:
                 return await caller(action, **kwargs)
             except Exception as exc:
-                logger.debug(f"[璋佽壘鐗规垜] 璋冪敤鍗忚绔?API {action} 澶辫触: {exc}")
+                logger.debug(f"[谁艾特我] 调用协议端 API {action} 失败: {exc}")
         except Exception as exc:
-            logger.debug(f"[璋佽壘鐗规垜] 璋冪敤鍗忚绔?API {action} 澶辫触: {exc}")
+            logger.debug(f"[谁艾特我] 调用协议端 API {action} 失败: {exc}")
         return None
 
     def _name_from_mapping(self, value: Any, keys: list[str]) -> str:

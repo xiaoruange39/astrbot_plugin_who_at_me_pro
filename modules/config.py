@@ -25,7 +25,7 @@ class ConfigMixin:
     def _config_bool(self, *keys: str, default: bool = False) -> bool:
         value = self._config_value(*keys, default=default)
         if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on", "寮€鍚?}
+            return value.strip().lower() in {"1", "true", "yes", "on", "开启"}
         return bool(value)
 
     def _config_int(self, *keys: str, default: int = 0) -> int:
@@ -44,7 +44,7 @@ class ConfigMixin:
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         if isinstance(value, str):
-            parts = re.split(r"[\n,锛宂+", value)
+            parts = re.split(r"[\n,，]+", value)
             return [part.strip() for part in parts if part.strip()]
         return []
 
@@ -60,12 +60,6 @@ class ConfigMixin:
     def _recent_image_cache_records(self) -> int:
         return max(0, self._config_int("record", "recent_image_cache_records", default=RECENT_IMAGE_CACHE_RECORDS))
 
-    def _image_cache_retention_hours(self) -> int:
-        try:
-            return int(self._config_int("record", "image_cache_retention_hours", default=IMAGE_CACHE_RETENTION_HOURS))
-        except Exception:
-            return IMAGE_CACHE_RETENTION_HOURS
-
     def _query_context_max_messages(self) -> int:
         return max(1, self._config_int("record", "query_context_max_messages", default=MAX_CONTEXT_MESSAGES))
 
@@ -80,7 +74,7 @@ class ConfigMixin:
 
     def _query_reverse_order(self) -> bool:
         value = self._config_str("record", "query_sort_order", default="asc").strip().lower()
-        return value in {"desc", "鍊掑簭", "reverse", "newest_first", "latest_first", "鏈€鏂板湪涓?}
+        return value in {"desc", "倒序", "reverse", "newest_first", "latest_first", "最新在上"}
 
     def _render_quality(self) -> int:
         return min(100, max(1, self._config_int("render", "image_quality", default=RENDER_IMAGE_QUALITY)))
@@ -139,12 +133,12 @@ class ConfigMixin:
         whitelist = self._reminder_user_whitelist()
         blacklist = self._reminder_user_blacklist()
         if user_id and user_id in blacklist:
-            return "榛戝悕鍗曞懡涓?
+            return "黑名单命中"
         if whitelist:
-            return "鐧藉悕鍗曞懡涓? if user_id in whitelist else "鐧藉悕鍗曟湭鍛戒腑"
+            return "白名单命中" if user_id in whitelist else "白名单未命中"
         if blacklist:
-            return "榛戝悕鍗曟湭鍛戒腑"
-        return "鏈厤缃悕鍗?
+            return "黑名单未命中"
+        return "未配置名单"
 
     def _event_umo(self, event: Any) -> str:
         return str(getattr(event, "unified_msg_origin", "") or "")
