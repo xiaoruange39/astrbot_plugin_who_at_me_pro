@@ -96,14 +96,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         await asyncio.sleep(60)
         while True:
             try:
-                # 清理 24 小时前的缓存
-                await self._cleanup_expired_image_caches(hours=24)
+                retention_hours = self._image_cache_retention_hours()
+                if retention_hours > 0:
+                    await self._cleanup_expired_image_caches(hours=retention_hours)
             except Exception as exc:
                 logger.debug(f"[谁艾特我] 维护循环异常: {exc}")
             
             # 每 12 小时检查一次
             await asyncio.sleep(12 * 3600)
-
 
     def _group_pipeline_lock(self, group_id: str) -> asyncio.Lock:
         lock = self._group_pipeline_locks.get(group_id)
@@ -222,7 +222,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
     async def on_group_message(self, event: AstrMessageEvent):
-        """璁板綍缇よ亰 @锛屽苟鍏煎鍘熸彃浠剁殑鑷劧璇█鍛戒护銆?"""
+        """记录群聊 @，并兼容原插件的自然语言命令。"""
         group_id = self._group_id(event)
         if not group_id:
             return
@@ -313,63 +313,63 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
         if CLEAR_ALL_PATTERN.match(stripped):
             if not self._is_bot_admin(event):
-                return [event.plain_result("鍙湁 AstrBot 绠＄悊鍛樻垨涓讳汉鍙互娓呴櫎鍏ㄩ儴鑹剧壒鏁版嵁")]
+                return [event.plain_result("只有 AstrBot 管理员或主人可以清除全部艾特数据")]
             return [await self._clear_all(event)]
 
         if CONTEXT_ON_PATTERN.match(stripped):
             if not self._is_admin(event):
-                return [event.plain_result("鍙湁缇ょ鎴栦富浜哄彲浠ユ搷浣滃摝")]
+                return [event.plain_result("只有群管或主人可以操作哦")]
             await self._set_context(group_id, True)
-            return [event.plain_result("宸插紑鍚湰缇よ壘鐗逛笂涓嬫枃璁板綍锛屽皢璁板綍鑹剧壒鍓嶅悗鍚?鏉℃秷鎭€?)]
+            return [event.plain_result("已开启本群艾特上下文记录，将记录艾特前后各5条消息。")]
 
         if CONTEXT_OFF_PATTERN.match(stripped):
             if not self._is_admin(event):
-                return [event.plain_result("鍙湁缇ょ鎴栦富浜哄彲浠ユ搷浣滃摝")]
+                return [event.plain_result("只有群管或主人可以操作哦")]
             await self._set_context(group_id, False)
             self.before_cache.pop(group_id, None)
             self.after_tasks.pop(group_id, None)
-            return [event.plain_result("宸插叧闂湰缇よ壘鐗逛笂涓嬫枃璁板綍銆?)]
+            return [event.plain_result("已关闭本群艾特上下文记录。")]
 
         if REMINDER_GROUP_ON_PATTERN.match(stripped):
             if not self._is_admin(event):
-                return [event.plain_result("鍙湁缇ょ鎴栦富浜哄彲浠ユ搷浣滃摝")]
+                return [event.plain_result("只有群管或主人可以操作哦")]
             await self._set_reminder_group_enabled(group_id, True)
-            return [event.plain_result("宸插紑鍚湰缇よ壘鐗硅鍔ㄦ彁閱掋€?)]
+            return [event.plain_result("已开启本群艾特被动提醒。")]
 
         if REMINDER_GROUP_OFF_PATTERN.match(stripped):
             if not self._is_admin(event):
-                return [event.plain_result("鍙湁缇ょ鎴栦富浜哄彲浠ユ搷浣滃摝")]
+                return [event.plain_result("只有群管或主人可以操作哦")]
             await self._set_reminder_group_enabled(group_id, False)
-            return [event.plain_result("宸插叧闂湰缇よ壘鐗硅鍔ㄦ彁閱掋€?)]
+            return [event.plain_result("已关闭本群艾特被动提醒。")]
 
         if REMINDER_PERSONAL_ON_PATTERN.match(stripped):
             await self._set_reminder_user_enabled(group_id, self._sender_id(event), True)
-            return [event.plain_result("宸插紑鍚綘鐨勮壘鐗规彁閱掋€?)]
+            return [event.plain_result("已开启你的艾特提醒。")]
 
         if REMINDER_PERSONAL_OFF_PATTERN.match(stripped):
             await self._set_reminder_user_enabled(group_id, self._sender_id(event), False)
-            return [event.plain_result("宸插叧闂綘鐨勮壘鐗规彁閱掋€?)]
+            return [event.plain_result("已关闭你的艾特提醒。")]
 
         if REMINDER_CONTEXT_ON_PATTERN.match(stripped):
             if not self._is_admin(event):
-                return [event.plain_result("鍙湁缇ょ鎴栦富浜哄彲浠ユ搷浣滃摝")]
+                return [event.plain_result("只有群管或主人可以操作哦")]
             await self._set_reminder_context(group_id, True)
-            return [event.plain_result("宸插紑鍚湰缇ゆ彁閱掍笂涓嬫枃锛屾彁閱掓埅鍥句細甯︿笂鑹剧壒鍓嶅悗娑堟伅銆?)]
+            return [event.plain_result("已开启本群提醒上下文，提醒截图会带上艾特前后消息。")]
 
         if REMINDER_CONTEXT_OFF_PATTERN.match(stripped):
             if not self._is_admin(event):
-                return [event.plain_result("鍙湁缇ょ鎴栦富浜哄彲浠ユ搷浣滃摝")]
+                return [event.plain_result("只有群管或主人可以操作哦")]
             await self._set_reminder_context(group_id, False)
-            return [event.plain_result("宸插叧闂湰缇ゆ彁閱掍笂涓嬫枃銆?)]
+            return [event.plain_result("已关闭本群提醒上下文。")]
 
         context_match = REMINDER_CONTEXT_SET_PATTERN.match(stripped)
         if context_match:
             if not self._is_admin(event):
-                return [event.plain_result("鍙湁缇ょ鎴栦富浜哄彲浠ユ搷浣滃摝")]
+                return [event.plain_result("只有群管或主人可以操作哦")]
             before = min(int(context_match.group(1)), self._max_reminder_context())
             after = min(int(context_match.group(2)), self._max_reminder_context())
             await self._set_reminder_context(group_id, True, before, after)
-            return [event.plain_result(f"宸茶缃彁閱掍笂涓嬫枃锛氬墠 {before} 鏉★紝鍚?{after} 鏉°€?)]
+            return [event.plain_result(f"已设置提醒上下文：前 {before} 条，后 {after} 条。")]
 
         if REMINDER_STATUS_PATTERN.match(stripped):
             return [event.plain_result(await self._reminder_status_text(event, group_id))]
@@ -849,7 +849,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             self._config_str(
                 "message",
                 "reminder_text_template",
-                default="{target_name}锛屼綘涓嶅湪鐨勬椂鍊欐湁 {count} 鏉¤壘鐗硅褰晘",
+                default="{target_name}，你不在的时候有 {count} 条艾特记录~",
             ),
             target_name=target_name,
             count=len(pending),
@@ -890,15 +890,15 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                         raise RuntimeError("failed to send reminder text")
                     for image_path in image_paths:
                         if not await self._try_send(event, event.image_result(image_path)):
-                            raise RuntimeError(f"鍙戦€佹彁閱掑浘鐗囧け璐? {image_path}")
+                            raise RuntimeError(f"发送提醒图片失败: {image_path}")
             elif not await self._try_send_images(event, image_paths):
                 for image_path in image_paths:
                     if not await self._try_send(event, event.image_result(image_path)):
-                        raise RuntimeError(f"鍙戦€佹彁閱掑浘鐗囧け璐? {image_path}")
+                        raise RuntimeError(f"发送提醒图片失败: {image_path}")
             sent = True
             self._drop_records_image_cache(original_pending, delete_files=True)
         except Exception as exc:
-            logger.error(f"[璋佽壘鐗规垜] 娓叉煋鎴栧彂閫佹彁閱掑け璐? {exc}")
+            logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
             if not sent:
                 await self._restore_pending_reminders(group_id, user_id, original_pending)
             if reminder_text and not image_paths:
@@ -916,14 +916,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
     ) -> list[Any]:
         target = self._query_target(event, text, mentions)
         if not target:
-            return [event.plain_result("璇峰湪鍛戒护閲?@ 瑕佹煡璇㈢殑浜?)]
+            return [event.plain_result("请在命令里 @ 要查询的人")]
 
         records = await self._get_records(group_id, target)
         all_records = await self._get_records(group_id, ALL_TARGET)
         records = self._dedupe_records(records + all_records)
 
         if not records:
-            return [event.plain_result("鐩墠杩樻病鏈変汉鑹剧壒")]
+            return [event.plain_result("目前还没有人艾特")]
 
         target_name = await self._target_name(event, group_id, target)
         total_records = len(records)
@@ -940,11 +940,11 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             return [event.plain_result(self._plain_summary(records, target_name))]
 
         is_self_query = target == self._sender_id(event)
-        target_pronoun = "浣? if is_self_query else "ta"
-        waiting_template = self._config_str("message", "waiting_text_template", default="璁﹞bot_name}鐪嬬湅璋佽壘鐗硅繃浣犲摝锛岀◢绛変竴涓媬")
+        target_pronoun = "你" if is_self_query else "ta"
+        waiting_template = self._config_str("message", "waiting_text_template", default="让{bot_name}看看谁艾特过你哦，稍等一下~")
         if waiting_template.strip():
-            if not is_self_query and waiting_template == "璁﹞bot_name}鐪嬬湅璋佽壘鐗硅繃浣犲摝锛岀◢绛変竴涓媬":
-                waiting_template = "璁﹞bot_name}鐪嬬湅璋佽壘鐗硅繃ta鍝︼紝绋嶇瓑涓€涓媬"
+            if not is_self_query and waiting_template == "让{bot_name}看看谁艾特过你哦，稍等一下~":
+                waiting_template = "让{bot_name}看看谁艾特过ta哦，稍等一下~"
             waiting_text = self._format_template(
                 waiting_template,
                 bot_name=await self._bot_name(event, group_id),
@@ -973,7 +973,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                         "total_records": total_records,
                         "context_enabled": context_enabled,
                         "now": render_time,
-                        "page_label": f"绗?{idx} / {len(chunks)} 椤? if len(chunks) > 1 else "",
+                        "page_label": f"第 {idx} / {len(chunks)} 页" if len(chunks) > 1 else "",
                         "header_image": header_image,
                         "footer_image": footer_image,
                     }
@@ -984,9 +984,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             if not await self._try_send_images(event, image_paths):
                 for image_path in image_paths:
                     if not await self._try_send(event, event.image_result(image_path)):
-                        raise RuntimeError(f"鍙戦€佸浘鐗囧け璐? {image_path}")
+                        raise RuntimeError(f"发送图片失败: {image_path}")
         except Exception as exc:
-            logger.error(f"[璋佽壘鐗规垜] 娓叉煋鎴栧彂閫佸浘鐗囧け璐? {exc}")
+            logger.error(f"[谁艾特我] 渲染或发送图片失败: {exc}")
             await self._try_send(event, event.plain_result(self._plain_summary(records, target_name)))
         finally:
             self._delete_cached_image_paths(temporary_image_paths)
@@ -1000,9 +1000,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         removed_records = await self._delete_record_key(key)
         removed_pending = await self._delete_pending_key(pending_key)
         if not removed_records and not removed_pending:
-            return event.plain_result("鐩墠鏁版嵁搴撴病鏈変綘鐨刟t鏁版嵁,鏃犳硶娓呴櫎")
+            return event.plain_result("目前数据库没有你的at数据,无法清除")
 
-        return event.plain_result("宸叉垚鍔熸竻闄?)
+        return event.plain_result("已成功清除")
 
     async def _clear_all(self, event: AstrMessageEvent) -> Any:
         async with self._data_maintenance():
@@ -1045,7 +1045,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self.before_cache.clear()
         self.after_tasks.clear()
         self.reminder_after_tasks.clear()
-        return event.plain_result("宸叉垚鍔熸竻闄ゅ叏閮ㄨ壘鐗规暟鎹?)
+        return event.plain_result("已成功清除全部艾特数据")
 
     def _build_blocks(
         self,
@@ -1084,7 +1084,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     def _view_message(self, data: dict[str, Any], is_at: bool, target_name: str, target_id: str = "") -> dict[str, Any]:
         user_id = str(data.get("user_id") or data.get("User") or "")
-        nickname = self._display_name(data.get("name"), data.get("nickname"), user_id, default="鐢ㄦ埛")
+        nickname = self._display_name(data.get("name"), data.get("nickname"), user_id, default="用户")
         poke = data.get("poke") if isinstance(data.get("poke"), dict) else None
         message = str(data.get("message") or "")
         images = self._record_renderable_images(data)
@@ -1116,7 +1116,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             elif message.strip().endswith(message_after_images):
                 message = message.strip()[: -len(message_after_images)].strip()
         role = str(data.get("role") or "member").lower()
-        role_text = {"owner": "缇や富", "admin": "绠＄悊鍛?, "administrator": "绠＄悊鍛?}.get(role, "缇ゅ憳")
+        role_text = {"owner": "群主", "admin": "管理员", "administrator": "管理员"}.get(role, "群员")
         title = str(data.get("title") or "")
         member_title = str(data.get("member_title") or title or "")
         level = self._level_text(data.get("level"))
@@ -1164,8 +1164,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "tag_text_color": tag_text_color,
             "is_poke": bool(poke),
             "poke_actor": self._display_name((poke or {}).get("actor"), nickname),
-            "poke_target": self._display_name((poke or {}).get("target"), default="瀵规柟"),
-            "poke_action": str((poke or {}).get("action") or "馃憢 鎷嶄簡鎷?),
+            "poke_target": self._display_name((poke or {}).get("target"), default="对方"),
+            "poke_action": str((poke or {}).get("action") or "👋 拍了拍"),
             "poke_suffix": str((poke or {}).get("suffix") or ""),
         }
 
@@ -1176,7 +1176,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         images = self._record_renderable_images(quote)
         if not message and not images:
             return None
-        nickname = self._display_name(quote.get("name"), quote.get("nickname"), quote.get("user_id"), default="寮曠敤娑堟伅")
+        nickname = self._display_name(quote.get("name"), quote.get("nickname"), quote.get("user_id"), default="引用消息")
         return {
             "nickname": nickname,
             "message": message,
@@ -1185,7 +1185,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "time_text": self._time_text(quote.get("time", 0)),
         }
 
-    def _display_name(self, *values: Any, default: str = "鐢ㄦ埛") -> str:
+    def _display_name(self, *values: Any, default: str = "用户") -> str:
         for value in values:
             text = str(value or "").strip()
             if text and text.lower() not in {"none", "null", "undefined"}:
@@ -1323,7 +1323,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         )
 
     def _starts_with_at_display(self, value: Any) -> bool:
-        return str(value or "").lstrip().startswith(("@", "锛?))
+        return str(value or "").lstrip().startswith(("@", "＠"))
 
     def _merge_timeline_message(self, left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         use_right = bool(right.get("is_at") and not left.get("is_at"))
@@ -1370,7 +1370,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     def _is_media_summary_message(self, message: str) -> bool:
         text = re.sub(r"\s+", " ", str(message or "")).strip()
-        return text in {"[瑙嗛]", "[璇煶]", "[鏂囦欢]", "[琛ㄦ儏]", "[鍗＄墖娑堟伅]"} or text.startswith("[鏂囦欢] ")
+        return text in {"[视频]", "[语音]", "[文件]", "[表情]", "[卡片消息]"} or text.startswith("[文件] ")
 
     def _split_timeline_blocks(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
