@@ -1,207 +1,218 @@
 {
-  "global": {
-    "description": "鍏ㄥ眬浣跨敤閰嶇疆",
-    "type": "object",
-    "items": {
-      "enabled_group_umos": {
-        "description": "鍏佽浣跨敤鎻掍欢鐨勭兢 UMO 鐧藉悕鍗?,
-        "type": "list",
-        "default": [],
-        "hint": "鐣欑┖鍒欐墍鏈夌兢閮藉彲浣跨敤鏈彃浠讹紱濉叆鍚庡彧鏈夎繖浜?UMO 鐨勭兢浼氳褰曘€佹煡璇€佹竻鐞嗗拰瑙﹀彂鎻愰啋銆傞潪鐧藉悕鍗曞叆鍙ｄ細闈欓粯蹇界暐鎻掍欢鍛戒护骞堕樆姝?LLM 鎺ョ銆?
-      }
-    }
-  },
-  "record": {
-    "description": "璁板綍鏌ヨ閰嶇疆",
-    "type": "object",
-    "items": {
-      "max_records_per_target": {
-        "description": "姣忎釜缇ゆ垚鍛樻渶澶氫繚鐣欑殑鑹剧壒璁板綍鏁?,
-        "type": "int",
-        "default": 300,
-        "hint": "瓒呰繃鍚庝細淇濈暀鏈€鏂拌褰曘€?
-      },
-      "recent_image_cache_records": {
-        "description": "鏈€杩戝灏戞潯璁板綍缂撳瓨娑堟伅鍥剧墖",
-        "type": "int",
-        "default": 0,
-        "hint": "0 琛ㄧず涓嶇紦瀛樻秷鎭浘鐗囷紱澶т簬 0 鏃朵粎鏈€杩?N 鏉¤褰曚繚瀛樻湰鍦板浘鐗囩紦瀛橈紝鏃ц褰曚細鍒犻櫎鏈湴缂撳瓨骞剁户缁娇鐢?QQ 涓存椂閾炬帴銆?
-      },
-            "image_cache_retention_hours": {
-        "description": "图片缓存保留时间(小时)",
-        "type": "int",
-        "default": 24,
-        "hint": "定时清理该时间之前的旧图片缓存文件夹。如果设置为 0 或更低则禁用定时清理。"
-      },
-      "max_messages_per_image": {
-        "description": "鍗曞紶鏌ヨ鍥炬渶澶氬睍绀虹殑娑堟伅鏉℃暟",
-        "type": "int",
-        "default": 12,
-        "hint": "璁板綍杈冨鏃朵細鑷姩鍒嗗寮犲浘銆?
-      },
-      "max_query_pages": {
-        "description": "鍗曟鏌ヨ鏈€澶氬彂閫佸浘鐗囬〉鏁?,
-        "type": "int",
-        "default": 0,
-        "hint": "0 琛ㄧず涓嶉檺鍒讹紱澶т簬 0 鏃跺彧鍙戦€佹渶鏂?N 椤碉紝鍐嶆寜鎺掑簭鏂瑰紡灞曠ず銆?
-      },
-      "query_context_max_messages": {
-        "description": "鏌ヨ涓婁笅鏂囨渶澶氱紦瀛樻秷鎭潯鏁?,
-        "type": "int",
-        "default": 5,
-        "hint": "鍘熺増榛樿鍓嶅悗鍚?5 鏉°€?
-      },
-      "query_sort_order": {
-        "description": "鏌ヨ缁撴灉鎺掑簭鏂瑰紡",
-        "type": "string",
-        "default": "姝ｅ簭",
-        "options": ["姝ｅ簭", "鍊掑簭"],
-        "hint": "姝ｅ簭=鏃ф秷鎭湪涓娿€佹渶鏂版秷鎭湪涓嬶紱鍊掑簭=鏈€鏂版秷鎭湪涓娿€?
-      }
-    }
-  },
-  "reminder": {
-    "description": "鑹剧壒鎻愰啋閰嶇疆",
-    "type": "object",
-    "items": {
-      "default_group_enabled": {
-        "description": "鏂扮兢榛樿寮€鍚鍔ㄨ壘鐗规彁閱?,
-        "type": "bool",
-        "default": true,
-        "hint": "鍏抽棴鍚庝笉浼氱敓鎴愬洖缇ゆ彁閱掞紱浠嶅彲鐢?#寮€鍚湰缇よ壘鐗规彁閱?鍗曠嫭寮€鍚€?
-      },
-      "enabled_group_umos": {
-        "description": "闄愬畾寮€鍚彁閱掔殑缇?UMO 鍚嶅崟",
-        "type": "list",
-        "default": [],
-        "hint": "鐣欑┖鍒欎笉闄愬埗缇わ紝缁х画浣跨敤榛樿缇ゅ紑鍏冲拰缇ゅ懡浠わ紱濉叆鍚庡彧鏈夎繖浜?UMO 鐨勭兢浼氱敓鎴?鎺ㄩ€佹彁閱掋€傚彲鐢?#鑹剧壒鎻愰啋鐘舵€?鏌ョ湅褰撳墠缇?UMO銆?
-      },
-      "default_user_enabled": {
-        "description": "鐢ㄦ埛榛樿鎺ユ敹鑹剧壒鎻愰啋",
-        "type": "bool",
-        "default": true,
-        "hint": "鐢ㄦ埛鍙敤 #鍏抽棴鎴戠殑鑹剧壒鎻愰啋 鍏抽棴銆?
-      },
-      "user_whitelist": {
-        "description": "鍏佽鎺ユ敹鎻愰啋鐨勭敤鎴?QQ 鐧藉悕鍗?,
-        "type": "list",
-        "default": [],
-        "hint": "鐣欑┖鍒欎笉闄愬埗鐢ㄦ埛锛涘～鍏ュ悗鍙湁杩欎簺 QQ 鍙蜂細杩涘叆琚姩鑹剧壒鎻愰啋闃熷垪銆傚彧褰卞搷鎻愰啋锛屼笉褰卞搷鎵嬪姩鏌ヨ銆?
-      },
-      "user_blacklist": {
-        "description": "绂佹鎺ユ敹鎻愰啋鐨勭敤鎴?QQ 榛戝悕鍗?,
-        "type": "list",
-        "default": [],
-        "hint": "濉叆鍚庤繖浜?QQ 鍙蜂笉浼氳繘鍏ヨ鍔ㄨ壘鐗规彁閱掗槦鍒楋紝涔熶笉浼氭敹鍒板凡鎺掗槦鐨勬彁閱掋€傞粦鍚嶅崟浼樺厛浜庣櫧鍚嶅崟銆傚彧褰卞搷鎻愰啋锛屼笉褰卞搷鎵嬪姩鏌ヨ銆?
-      },
-      "away_minutes": {
-        "description": "绂诲紑鍒ゅ畾鍒嗛挓鏁?,
-        "type": "int",
-        "default": 10,
-        "hint": "鐢ㄦ埛鍥炴潵鍙戣█鏃讹紝鑹剧壒娑堟伅瓒呰繃杩欎釜鏃堕棿鎵嶅彲鑳借Е鍙戞彁閱掋€?
-      },
-      "min_messages_after_mention": {
-        "description": "瑙﹀彂鎻愰啋鎵€闇€鐨勬渶灏戠兢娑堟伅鏁?,
-        "type": "int",
-        "default": 5,
-        "hint": "缁熻鑹剧壒娑堟伅涔嬪悗銆佺敤鎴峰洖鏉ユ秷鎭箣鍓嶇殑缇ゆ秷鎭紱涓庣寮€鍒嗛挓鏁板悓鏃舵弧瓒虫墠鎻愰啋锛? 琛ㄧず涓嶉檺鍒舵秷鎭暟銆?
-      },
-      "max_pending_reminders": {
-        "description": "姣忎汉姣忕兢鏈€澶氫繚鐣欑殑寰呮彁閱掕褰曟暟",
-        "type": "int",
-        "default": 50,
-        "hint": "瓒呰繃鍚庝繚鐣欐渶鏂拌褰曘€?
-      },
-      "max_reminder_pages": {
-        "description": "鍗曟鎻愰啋鏈€澶氬彂閫佸浘鐗囬〉鏁?,
-        "type": "int",
-        "default": 0,
-        "hint": "0 琛ㄧず涓嶉檺鍒讹紱澶т簬 0 鏃跺彧鍙戦€佸墠 N 椤点€?
-      },
-      "default_context_enabled": {
-        "description": "榛樿寮€鍚彁閱掓埅鍥句笂涓嬫枃",
-        "type": "bool",
-        "default": false,
-        "hint": "寮€鍚悗鎻愰啋鎴浘鍙睍绀鸿壘鐗瑰墠鍚庢秷鎭€?
-      },
-      "default_context_before": {
-        "description": "榛樿鎻愰啋鎴浘鍓嶆枃鏉℃暟",
-        "type": "int",
-        "default": 1
-      },
-      "default_context_after": {
-        "description": "榛樿鎻愰啋鎴浘鍚庢枃鏉℃暟",
-        "type": "int",
-        "default": 1
-      },
-      "max_context_messages": {
-        "description": "鎻愰啋涓婁笅鏂囨渶澶ф潯鏁?,
-        "type": "int",
-        "default": 5,
-        "hint": "Web 閰嶇疆鍜岀兢鍛戒护璁剧疆閮戒細鍙楄繖涓笂闄愰檺鍒躲€?
-      }
-    }
-  },
-  "render": {
-    "description": "鍥剧墖娓叉煋閰嶇疆",
-    "type": "object",
-    "items": {
-      "prefer_browser": {
-        "description": "浼樺厛浣跨敤 Playwright/Chromium 娴忚鍣ㄦ覆鏌?,
-        "type": "bool",
-        "default": true
-      },
-      "image_quality": {
-        "description": "JPEG 鍥剧墖璐ㄩ噺",
-        "type": "int",
-        "default": 92,
-        "hint": "鑼冨洿寤鸿 60-100銆?
-      },
-      "browser_timeout_seconds": {
-        "description": "鍗曟娓叉煋鎬昏秴鏃剁鏁?,
-        "type": "int",
-        "default": 25
-      },
-      "page_timeout_ms": {
-        "description": "娴忚鍣ㄩ〉闈㈠姞杞借秴鏃舵绉掓暟",
-        "type": "int",
-        "default": 20000
-      },
-      "header_image_url": {
-        "description": "缁撴灉鍥鹃《閮ㄧ姸鎬佹爮鍥剧墖 URL / 鏈湴璺緞",
-        "type": "string",
-        "default": "",
-        "hint": "鍙€夐」銆傜暀绌烘椂浣跨敤鎻掍欢鍐呯疆鏈湴鍥剧墖锛汸age 涓婁紶鐨勮嚜瀹氫箟鍥剧墖浼樺厛绾ф洿楂樸€?
-      },
-      "footer_image_url": {
-        "description": "缁撴灉鍥惧簳閮ㄥ浘鐗?URL / 鏈湴璺緞",
-        "type": "string",
-        "default": "",
-        "hint": "鍙€夐」銆傜暀绌烘椂浣跨敤鎻掍欢鍐呯疆鏈湴鍥剧墖锛汸age 涓婁紶鐨勮嚜瀹氫箟鍥剧墖浼樺厛绾ф洿楂樸€?
-      },
-      "cleanup_render_hours": {
-        "description": "娓叉煋涓存椂鍥剧墖淇濈暀灏忔椂鏁?,
-        "type": "int",
-        "default": 24
-      }
-    }
-  },
-  "message": {
-    "description": "鎻愮ず鏂囨閰嶇疆",
-    "type": "object",
-    "items": {
-      "waiting_text_template": {
-        "description": "鏌ヨ绛夊緟鎻愮ず妯℃澘",
-        "type": "string",
-        "default": "璁﹞bot_name}鐪嬬湅璋佽壘鐗硅繃浣犲摝锛岀◢绛変竴涓媬",
-        "hint": "鍙敤鍙橀噺锛歿bot_name}銆亄target_name}銆亄target_pronoun}锛涚暀绌哄垯涓嶅彂閫佹煡璇㈢瓑寰呮彁绀猴紱鏌ヨ鍒汉涓斾娇鐢ㄩ粯璁ゆā鏉挎椂浼氳嚜鍔ㄦ樉绀?ta銆?
-      },
-      "reminder_text_template": {
-        "description": "鍥炵兢鎻愰啋鎻愮ず妯℃澘",
-        "type": "string",
-        "default": "{target_name}锛屼綘涓嶅湪鐨勬椂鍊欐湁 {count} 鏉¤壘鐗硅褰晘",
-        "hint": "鍙敤鍙橀噺锛歿target_name}銆亄count}锛涚暀绌哄垯鍙彂閫佹彁閱掑浘鐗囷紝涓嶅彂閫佹彁绀烘枃瀛椼€?
-      }
-    }
-  }
+    "global":  {
+                   "description":  "全局使用配置",
+                   "type":  "object",
+                   "items":  {
+                                 "enabled_group_umos":  {
+                                                            "description":  "允许使用插件的群 UMO 白名单",
+                                                            "type":  "list",
+                                                            "default":  [
+
+                                                                        ],
+                                                            "hint":  "留空则所有群都可使用本插件；填入后只有这些 UMO 的群会记录、查询、清理和触发提醒。非白名单入口会静默忽略插件命令并阻止 LLM 接管。"
+                                                        }
+                             }
+               },
+    "record":  {
+                   "description":  "记录查询配置",
+                   "type":  "object",
+                   "items":  {
+                                 "max_records_per_target":  {
+                                                                "description":  "每个群成员最多保留的艾特记录数",
+                                                                "type":  "int",
+                                                                "default":  300,
+                                                                "hint":  "超过后会保留最新记录。"
+                                                            },
+                                 "recent_image_cache_records":  {
+                                                                    "description":  "最近多少条记录缓存消息图片",
+                                                                    "type":  "int",
+                                                                    "default":  0,
+                                                                    "hint":  "0 表示不缓存消息图片；大于 0 时仅最近 N 条记录保存本地图片缓存，旧记录会删除本地缓存并继续使用 QQ 临时链接。"
+                                                                },
+                                 "image_cache_retention_hours":  {
+                                                                     "description":  "图片缓存保留时间(小时)",
+                                                                     "type":  "int",
+                                                                     "default":  24,
+                                                                     "hint":  "定时清理该时间之前的旧图片缓存文件夹。如果设置为 0 或更低则禁用定时清理。"
+                                                                 },
+                                 "max_messages_per_image":  {
+                                                                "description":  "单张查询图最多展示的消息条数",
+                                                                "type":  "int",
+                                                                "default":  12,
+                                                                "hint":  "记录较多时会自动分多张图。"
+                                                            },
+                                 "max_query_pages":  {
+                                                         "description":  "单次查询最多发送图片页数",
+                                                         "type":  "int",
+                                                         "default":  0,
+                                                         "hint":  "0 表示不限制；大于 0 时只发送最新 N 页，再按排序方式展示。"
+                                                     },
+                                 "query_context_max_messages":  {
+                                                                    "description":  "查询上下文最多缓存消息条数",
+                                                                    "type":  "int",
+                                                                    "default":  5,
+                                                                    "hint":  "原版默认前后各 5 条。"
+                                                                },
+                                 "query_sort_order":  {
+                                                          "description":  "查询结果排序方式",
+                                                          "type":  "string",
+                                                          "default":  "正序",
+                                                          "options":  [
+                                                                          "正序",
+                                                                          "倒序"
+                                                                      ],
+                                                          "hint":  "正序=旧消息在上、最新消息在下；倒序=最新消息在上。"
+                                                      }
+                             }
+               },
+    "reminder":  {
+                     "description":  "艾特提醒配置",
+                     "type":  "object",
+                     "items":  {
+                                   "default_group_enabled":  {
+                                                                 "description":  "新群默认开启被动艾特提醒",
+                                                                 "type":  "bool",
+                                                                 "default":  true,
+                                                                 "hint":  "关闭后不会生成回群提醒；仍可用 #开启本群艾特提醒 单独开启。"
+                                                             },
+                                   "enabled_group_umos":  {
+                                                              "description":  "限定开启提醒的群 UMO 名单",
+                                                              "type":  "list",
+                                                              "default":  [
+
+                                                                          ],
+                                                              "hint":  "留空则不限制群，继续使用默认群开关和群命令；填入后只有这些 UMO 的群会生成/推送提醒。可用 #艾特提醒状态 查看当前群 UMO。"
+                                                          },
+                                   "default_user_enabled":  {
+                                                                "description":  "用户默认接收艾特提醒",
+                                                                "type":  "bool",
+                                                                "default":  true,
+                                                                "hint":  "用户可用 #关闭我的艾特提醒 关闭。"
+                                                            },
+                                   "user_whitelist":  {
+                                                          "description":  "允许接收提醒的用户 QQ 白名单",
+                                                          "type":  "list",
+                                                          "default":  [
+
+                                                                      ],
+                                                          "hint":  "留空则不限制用户；填入后只有这些 QQ 号会进入被动艾特提醒队列。只影响提醒，不影响手动查询。"
+                                                      },
+                                   "user_blacklist":  {
+                                                          "description":  "禁止接收提醒的用户 QQ 黑名单",
+                                                          "type":  "list",
+                                                          "default":  [
+
+                                                                      ],
+                                                          "hint":  "填入后这些 QQ 号不会进入被动艾特提醒队列，也不会收到已排队的提醒。黑名单优先于白名单。只影响提醒，不影响手动查询。"
+                                                      },
+                                   "away_minutes":  {
+                                                        "description":  "离开判定分钟数",
+                                                        "type":  "int",
+                                                        "default":  10,
+                                                        "hint":  "用户回来发言时，艾特消息超过这个时间才可能触发提醒。"
+                                                    },
+                                   "min_messages_after_mention":  {
+                                                                      "description":  "触发提醒所需的最少群消息数",
+                                                                      "type":  "int",
+                                                                      "default":  5,
+                                                                      "hint":  "统计艾特消息之后、用户回来消息之前的群消息；与离开分钟数同时满足才提醒，0 表示不限制消息数。"
+                                                                  },
+                                   "max_pending_reminders":  {
+                                                                 "description":  "每人每群最多保留的待提醒记录数",
+                                                                 "type":  "int",
+                                                                 "default":  50,
+                                                                 "hint":  "超过后保留最新记录。"
+                                                             },
+                                   "max_reminder_pages":  {
+                                                              "description":  "单次提醒最多发送图片页数",
+                                                              "type":  "int",
+                                                              "default":  0,
+                                                              "hint":  "0 表示不限制；大于 0 时只发送前 N 页。"
+                                                          },
+                                   "default_context_enabled":  {
+                                                                   "description":  "默认开启提醒截图上下文",
+                                                                   "type":  "bool",
+                                                                   "default":  false,
+                                                                   "hint":  "开启后提醒截图可展示艾特前后消息。"
+                                                               },
+                                   "default_context_before":  {
+                                                                  "description":  "默认提醒截图前文条数",
+                                                                  "type":  "int",
+                                                                  "default":  1
+                                                              },
+                                   "default_context_after":  {
+                                                                 "description":  "默认提醒截图后文条数",
+                                                                 "type":  "int",
+                                                                 "default":  1
+                                                             },
+                                   "max_context_messages":  {
+                                                                "description":  "提醒上下文最大条数",
+                                                                "type":  "int",
+                                                                "default":  5,
+                                                                "hint":  "Web 配置和群命令设置都会受这个上限限制。"
+                                                            }
+                               }
+                 },
+    "render":  {
+                   "description":  "图片渲染配置",
+                   "type":  "object",
+                   "items":  {
+                                 "prefer_browser":  {
+                                                        "description":  "优先使用 Playwright/Chromium 浏览器渲染",
+                                                        "type":  "bool",
+                                                        "default":  true
+                                                    },
+                                 "image_quality":  {
+                                                       "description":  "JPEG 图片质量",
+                                                       "type":  "int",
+                                                       "default":  92,
+                                                       "hint":  "范围建议 60-100。"
+                                                   },
+                                 "browser_timeout_seconds":  {
+                                                                 "description":  "单次渲染总超时秒数",
+                                                                 "type":  "int",
+                                                                 "default":  25
+                                                             },
+                                 "page_timeout_ms":  {
+                                                         "description":  "浏览器页面加载超时毫秒数",
+                                                         "type":  "int",
+                                                         "default":  20000
+                                                     },
+                                 "header_image_url":  {
+                                                          "description":  "结果图顶部状态栏图片 URL / 本地路径",
+                                                          "type":  "string",
+                                                          "default":  "",
+                                                          "hint":  "可选项。留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
+                                                      },
+                                 "footer_image_url":  {
+                                                          "description":  "结果图底部图片 URL / 本地路径",
+                                                          "type":  "string",
+                                                          "default":  "",
+                                                          "hint":  "可选项。留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
+                                                      },
+                                 "cleanup_render_hours":  {
+                                                              "description":  "渲染临时图片保留小时数",
+                                                              "type":  "int",
+                                                              "default":  24
+                                                          }
+                             }
+               },
+    "message":  {
+                    "description":  "提示文案配置",
+                    "type":  "object",
+                    "items":  {
+                                  "waiting_text_template":  {
+                                                                "description":  "查询等待提示模板",
+                                                                "type":  "string",
+                                                                "default":  "让{bot_name}看看谁艾特过你哦，稍等一下~",
+                                                                "hint":  "可用变量：{bot_name}、{target_name}、{target_pronoun}；留空则不发送查询等待提示；查询别人且使用默认模板时会自动显示 ta。"
+                                                            },
+                                  "reminder_text_template":  {
+                                                                 "description":  "回群提醒提示模板",
+                                                                 "type":  "string",
+                                                                 "default":  "{target_name}，你不在的时候有 {count} 条艾特记录~",
+                                                                 "hint":  "可用变量：{target_name}、{count}；留空则只发送提醒图片，不发送提示文字。"
+                                                             }
+                              }
+                }
 }
