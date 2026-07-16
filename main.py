@@ -222,7 +222,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
     async def on_group_message(self, event: AstrMessageEvent):
-        """璁板綍缇よ亰 @锛屽苟鍏煎鍘熸彃浠剁殑鑷劧璇█鍛戒护銆?""
+        """璁板綍缇よ亰 @锛屽苟鍏煎鍘熸彃浠剁殑鑷劧璇█鍛戒护銆?"""
         group_id = self._group_id(event)
         if not group_id:
             return
