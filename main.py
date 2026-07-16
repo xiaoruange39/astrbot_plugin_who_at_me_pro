@@ -89,9 +89,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         asyncio.create_task(self._maintenance_loop())
 
     async def _maintenance_loop(self) -> None:
-        \"\"\"
+        """
         定期执行维护任务
-        \"\"\"
+        """
         # 启动后先等 1 分钟
         await asyncio.sleep(60)
         while True:
