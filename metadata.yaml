@@ -7,7 +7,7 @@ tags:
   - "@"
   - 谁艾特我
 category: 工具
-version: v1.0.0
+version: v1.0.1
 author: xiaoruange39
 repo: "https://github.com/xiaoruange39/astrbot_plugin_who_at_me_pro"
 astrbot_version: ">=4.9.2,<5"
