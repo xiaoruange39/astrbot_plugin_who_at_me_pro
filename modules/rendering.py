@@ -21,15 +21,50 @@ def _load_result_template() -> str:
     return (Path(__file__).resolve().parents[1] / "templates" / "result.html").read_text(encoding="utf-8")
 
 
+def _load_help_template() -> str:
+    return (Path(__file__).resolve().parents[1] / "templates" / "help.html").read_text(encoding="utf-8")
+
+
 HTML_TEMPLATE = _load_result_template()
+HELP_TEMPLATE = _load_help_template()
 
 
 class RenderingMixin:
+    async def _render_help_image(self, data: dict[str, Any]) -> str:
+        data = dict(data)
+        data.setdefault("layout", self._render_layout())
+        data.setdefault("custom_font_css", self._custom_font_css())
+        timeout = self._render_task_timeout_sec()
+        mode = self._render_mode()
+        if mode == "api":
+            return await asyncio.wait_for(self._render_html_with_t2i(HELP_TEMPLATE, data), timeout=timeout)
+        if mode == "browser":
+            return await asyncio.wait_for(self._render_html_with_browser(HELP_TEMPLATE, data), timeout=timeout)
+        if self._config_bool("render", "prefer_browser", default=True):
+            try:
+                return await asyncio.wait_for(
+                    self._render_html_with_browser(HELP_TEMPLATE, data),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[who_at_me] help browser render timed out; falling back to html_render")
+            except Exception as exc:
+                logger.warning(
+                    f"[who_at_me] help browser render failed; falling back to html_render: {type(exc).__name__}: {exc}",
+                    exc_info=True,
+                )
+        return await asyncio.wait_for(self._render_html_with_t2i(HELP_TEMPLATE, data), timeout=timeout)
+
     async def _render_query_image(self, data: dict[str, Any]) -> str:
         data = dict(data)
         data.setdefault("layout", self._render_layout())
         data.setdefault("custom_font_css", self._custom_font_css())
         timeout = self._render_task_timeout_sec()
+        mode = self._render_mode()
+        if mode == "api":
+            return await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout)
+        if mode == "browser":
+            return await asyncio.wait_for(self._render_html_with_browser(HTML_TEMPLATE, data), timeout=timeout)
         if self._config_bool("render", "prefer_browser", default=True):
             try:
                 return await asyncio.wait_for(
@@ -56,6 +91,17 @@ class RenderingMixin:
             prepared.append(data)
 
         timeout = self._render_task_timeout_sec()
+        mode = self._render_mode()
+        if mode == "api":
+            result = []
+            for data in prepared:
+                result.append(await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout))
+            return result
+        if mode == "browser":
+            return await asyncio.wait_for(
+                self._render_html_pages_with_browser(HTML_TEMPLATE, prepared),
+                timeout=timeout * len(prepared),
+            )
         if self._config_bool("render", "prefer_browser", default=True):
             try:
                 return await asyncio.wait_for(

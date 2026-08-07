@@ -1056,7 +1056,7 @@ class MessageMixin:
             return {"type": "video", "title": title}
         if seg_type == "file":
             source = self._first_string(
-                self._segment_values(segment, ["url", "path", "file_path", "filePath", "local_path", "localPath", "file_", "file"])
+                self._segment_values(segment, ["url", "path", "file_path", "filePath", "local_path", "localPath", "file_", "file_id"])
             )
             title = self._display_name(
                 self._segment_value(segment, ["name", "file_name", "fileName", "filename", "title"]),
@@ -1167,10 +1167,9 @@ class MessageMixin:
                     values.append(value)
         if not isinstance(segment, dict):
             for name in names:
-                if hasattr(segment, name):
-                    value = getattr(segment, name)
-                    if value is not None and value != "":
-                        values.append(value)
+                value = self._safe_object_attr(segment, name)
+                if value is not None and value != "":
+                    values.append(value)
         return self._unique_strings(values)
 
     def _segment_media_summary(self, segment: Any) -> str:
@@ -1187,7 +1186,7 @@ class MessageMixin:
         if seg_type in {"record", "voice", "audio"}:
             return "[语音]"
         if seg_type == "file":
-            name = self._segment_value(segment, ["name", "file_name", "fileName", "filename", "file"])
+            name = self._segment_value(segment, ["name", "file_name", "fileName", "filename", "title"])
             return f"[文件] {name}" if name else "[文件]"
         if seg_type in {"json", "xml", "card", "share"}:
             value = self._segment_value(
@@ -1805,10 +1804,15 @@ class MessageMixin:
 
     def _first_attr(self, obj: Any, names: list[str]) -> Any:
         for name in names:
-            if hasattr(obj, name):
-                value = getattr(obj, name)
-                if value is not None:
-                    return value
+            value = self._safe_object_attr(obj, name)
+            if value is not None:
+                return value
+        return None
+
+    def _safe_object_attr(self, obj: Any, name: str) -> Any:
+        data = getattr(obj, "__dict__", None)
+        if isinstance(data, dict) and name in data:
+            return data.get(name)
         return None
 
     def _time_text(self, value: Any) -> str:

@@ -135,7 +135,7 @@ class DataMixin:
         return await self._run_kv_write(super().delete_kv_data, key)
 
     async def _run_kv_write(self, operation: Any, key: str, *args: Any) -> Any:
-        delays = (0.05, 0.1, 0.2, 0.4, 0.8)
+        delays = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
         async with self._preferences_write_lock():
             for attempt in range(len(delays) + 1):
                 try:
@@ -144,10 +144,14 @@ class DataMixin:
                     if not self._is_database_locked_error(exc) or attempt >= len(delays):
                         raise
                     delay = delays[attempt]
-                    logger.warning(
+                    message = (
                         "[who_at_me] preferences database locked; "
                         f"retrying write for {key} in {delay:.2f}s ({attempt + 1}/{len(delays)})"
                     )
+                    if attempt >= 3:
+                        logger.warning(message)
+                    else:
+                        logger.debug(message)
                     await asyncio.sleep(delay)
         raise RuntimeError("unreachable")
 
@@ -960,7 +964,27 @@ class DataMixin:
         }
         if not self._member_info_has_name(data):
             return
+        if self._member_info_recently_remembered(group_id, user_id, data):
+            return
         await self.put_kv_data(self._member_cache_key(group_id, user_id), data)
+
+    def _member_info_recently_remembered(self, group_id: str, user_id: str, data: dict[str, Any]) -> bool:
+        cache = getattr(self, "_member_info_write_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._member_info_write_cache = cache
+        now = time.time()
+        if len(cache) > 2048:
+            expired = [key for key, item in cache.items() if now - float(item.get("time") or 0) > MEMBER_CACHE_TTL_SECONDS]
+            for key in expired[:1024]:
+                cache.pop(key, None)
+        key = (str(group_id), str(user_id))
+        fingerprint = tuple(str(data.get(name) or "") for name in ("card", "nickname", "name", "role", "level", "title", "member_title"))
+        cached = cache.get(key)
+        if cached and cached.get("fingerprint") == fingerprint and now - float(cached.get("time") or 0) < MEMBER_CACHE_TTL_SECONDS:
+            return True
+        cache[key] = {"fingerprint": fingerprint, "time": now}
+        return False
 
     async def _cached_member_info(self, group_id: str, user_id: str) -> dict[str, Any]:
         data = await self.get_kv_data(self._member_cache_key(group_id, user_id), {})

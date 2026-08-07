@@ -79,6 +79,19 @@ class ConfigMixin:
         value = self._config_str("record", "query_sort_order", default="asc").strip().lower()
         return value in {"desc", "倒序", "reverse", "newest_first", "latest_first", "最新在上"}
 
+    def _render_mode(self) -> str:
+        value = self._config_str("render", "render_mode", default="自动").strip().lower()
+        if value in {"api", "api渲染", "html_render", "htmlrender"}:
+            return "api"
+        if value in {"browser", "local", "local_browser", "本地浏览器渲染", "浏览器渲染", "本地渲染"}:
+            return "browser"
+        if value in {"text", "plain", "纯文字", "文字"}:
+            return "text"
+        return "auto"
+
+    def _render_text_only(self) -> bool:
+        return self._render_mode() == "text"
+
     def _render_quality(self) -> int:
         return min(100, max(1, self._config_int("render", "image_quality", default=RENDER_IMAGE_QUALITY)))
 

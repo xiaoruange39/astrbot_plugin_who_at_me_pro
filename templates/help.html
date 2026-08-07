@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=600, initial-scale=1.0" />
+  <style>
+    {{ custom_font_css | safe }}
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 600px;
+      min-width: 600px;
+      max-width: 600px;
+      overflow-x: hidden;
+      background: #eef3f7;
+      font-family: var(--who-at-me-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
+    }
+    .app {
+      width: 600px;
+      max-width: 600px;
+      background: #eef3f7;
+      color: #101827;
+      padding: 24px 22px 16px;
+      box-sizing: border-box;
+    }
+    .app.font-bold, .app.font-bold * {
+      font-weight: 900 !important;
+      -webkit-text-stroke: var(--who-at-me-bold-stroke, 0px) currentColor;
+      text-shadow:
+        var(--who-at-me-bold-shadow-x, 0px) 0 0 currentColor,
+        var(--who-at-me-bold-shadow-x-neg, 0px) 0 0 currentColor,
+        0 var(--who-at-me-bold-shadow-y, 0px) 0 currentColor,
+        0 var(--who-at-me-bold-shadow-y-neg, 0px) 0 currentColor;
+    }
+    .title {
+      margin: 0;
+      color: #101827;
+      font-size: 30px;
+      line-height: 1.18;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      margin: 8px 0 20px;
+      color: #4d5d70;
+      font-size: 14px;
+      line-height: 1.5;
+      font-weight: 800;
+    }
+    .section {
+      margin-top: 16px;
+    }
+    .section:first-of-type {
+      margin-top: 0;
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      color: #101827;
+      font-size: 18px;
+      line-height: 1.25;
+      font-weight: 900;
+    }
+    .section-title::before {
+      content: "";
+      width: 6px;
+      height: 24px;
+      flex: 0 0 6px;
+      border-radius: 4px;
+      background: #2499f2;
+      box-shadow: 0 1px 3px rgba(36, 153, 242, 0.25);
+    }
+    .command-card {
+      background: #fff;
+      border: 1px solid #dde4eb;
+      border-radius: 7px;
+      padding: 12px 14px 11px;
+      margin-bottom: 10px;
+      box-shadow: 0 2px 7px rgba(15, 23, 42, 0.07);
+    }
+    .command-card:last-child {
+      margin-bottom: 0;
+    }
+    .command-name {
+      color: #101827;
+      font-size: 16px;
+      line-height: 1.35;
+      font-weight: 900;
+      word-break: break-word;
+    }
+    .command-desc {
+      margin-top: 5px;
+      color: #52667d;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 800;
+    }
+    .note {
+      margin-top: 18px;
+      padding: 11px 13px;
+      border: 1px solid #acd8fb;
+      border-radius: 7px;
+      background: #edf8ff;
+      color: #115b9c;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 900;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <div
+    class="app{% if layout.font_bold_strength %} font-bold{% endif %}"
+    style="--who-at-me-bold-stroke: {{ layout.font_bold_stroke }}px; --who-at-me-bold-shadow-x: {{ layout.font_bold_shadow_x }}px; --who-at-me-bold-shadow-x-neg: -{{ layout.font_bold_shadow_x_neg }}px; --who-at-me-bold-shadow-y: {{ layout.font_bold_shadow_y }}px; --who-at-me-bold-shadow-y-neg: -{{ layout.font_bold_shadow_y_neg }}px;"
+  >
+    <h1 class="title">艾特帮助</h1>
+    <div class="subtitle">查询谁在群里艾特过你，管理记录和被动提醒。</div>
+
+    {% for section in sections %}
+      <section class="section">
+        <div class="section-title">{{ section["title"] }}</div>
+        {% for item in section["items"] %}
+          <div class="command-card">
+            <div class="command-name">{{ item["command"] }}</div>
+            <div class="command-desc">{{ item["desc"] }}</div>
+          </div>
+        {% endfor %}
+      </section>
+    {% endfor %}
+
+    <div class="note">发送“艾特帮助”可再次查看本图。</div>
+  </div>
+</body>
+</html>

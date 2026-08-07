@@ -20,6 +20,7 @@ if __package__:
         CONTEXT_INDEX_KEY,
         CONTEXT_OFF_PATTERN,
         CONTEXT_ON_PATTERN,
+        HELP_PATTERN,
         INDEX_KEY,
         QUERY_PATTERN,
         REMINDER_CONTEXT_OFF_PATTERN,
@@ -46,6 +47,7 @@ else:
         CONTEXT_INDEX_KEY,
         CONTEXT_OFF_PATTERN,
         CONTEXT_ON_PATTERN,
+        HELP_PATTERN,
         INDEX_KEY,
         QUERY_PATTERN,
         REMINDER_CONTEXT_OFF_PATTERN,
@@ -103,6 +105,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 logger.debug(f"[谁艾特我] 维护循环异常: {exc}")
             
             # 每 12 小时检查一次
+            await asyncio.sleep(12 * 3600)
+
             await asyncio.sleep(12 * 3600)
 
     def _group_pipeline_lock(self, group_id: str) -> asyncio.Lock:
@@ -305,6 +309,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         mentions: list[str],
     ) -> list[Any] | None:
         stripped = text.strip()
+        if HELP_PATTERN.match(stripped):
+            return await self._help(event)
+
         if QUERY_PATTERN.match(stripped):
             return await self._query(event, group_id, stripped, mentions)
 
@@ -381,6 +388,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return any(
             pattern.match(stripped)
             for pattern in (
+                HELP_PATTERN,
                 QUERY_PATTERN,
                 CLEAR_PATTERN,
                 CLEAR_ALL_PATTERN,
@@ -844,7 +852,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         pending.sort(key=self._record_sort_key)
         target_name = await self._target_name(event, group_id, user_id)
         pending = await self._resolve_record_pokes(event, group_id, pending)
-        pending, temporary_image_paths = await self._prepare_records_for_render(pending)
         reminder_text = self._format_template(
             self._config_str(
                 "message",
@@ -854,6 +861,25 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             target_name=target_name,
             count=len(pending),
         ).strip()
+        if self._render_text_only():
+            if reminder_text and not await self._try_send(event, event.plain_result(reminder_text)):
+                await self._restore_pending_reminders(group_id, user_id, original_pending)
+                return
+            delivered = await self._try_send_records_forward_text(
+                event,
+                pending,
+                target_name,
+                title="",
+                reverse=False,
+            )
+            if delivered:
+                self._drop_records_image_cache(original_pending, delete_files=True)
+                return
+            await self._try_send(event, event.plain_result(self._records_forward_unavailable_text(reminder=True)))
+            await self._restore_pending_reminders(group_id, user_id, original_pending)
+            return
+
+        pending, temporary_image_paths = await self._prepare_records_for_render(pending)
         blocks = self._build_blocks(pending, target_name, user_id, reverse=False)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_reminder_pages(), keep_latest=True)
@@ -908,15 +934,268 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
             if not delivered:
-                plain_summary = self._plain_summary(pending, target_name)
-                fallback_text = f"{reminder_text}\n\n{plain_summary}" if reminder_text else plain_summary
-                delivered = await self._try_send(event, event.plain_result(fallback_text))
+                delivered = await self._try_send_records_forward_text(
+                    event,
+                    pending,
+                    target_name,
+                    title=reminder_text or f"{target_name} 的艾特提醒",
+                    reverse=False,
+                )
+                if not delivered:
+                    await self._try_send(event, event.plain_result(self._records_forward_unavailable_text(reminder=True)))
             if delivered:
                 self._drop_records_image_cache(original_pending, delete_files=True)
             else:
                 await self._restore_pending_reminders(group_id, user_id, original_pending)
         finally:
             self._delete_cached_image_paths(temporary_image_paths)
+
+    async def _help(self, event: AstrMessageEvent) -> list[Any]:
+        sections = self._help_sections()
+        if self._render_text_only():
+            if await self._try_send_help_forward_text(event, sections):
+                return []
+            return [event.plain_result(self._help_plain_text(sections))]
+        image_path = ""
+        try:
+            image_path = await self._render_help_image(
+                {
+                    "sections": sections,
+                    "now": datetime.now().strftime("%H:%M"),
+                    "header_image": self._header_image_url(),
+                    "footer_image": self._footer_image_url(),
+                }
+            )
+            if await self._try_send(event, event.image_result(image_path)):
+                return []
+        except Exception as exc:
+            logger.error(f"[who_at_me] render or send help image failed: {type(exc).__name__}: {exc}")
+
+        if await self._try_send_help_forward_text(event, sections):
+            return []
+        return [event.plain_result(self._help_plain_text(sections))]
+
+    def _help_sections(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "title": "查询",
+                "items": [
+                    {"command": "谁艾特我", "desc": "查看最近谁在本群艾特过你。"},
+                    {"command": "谁艾特他 @某人", "desc": "查看指定成员被谁艾特过。"},
+                    {"command": "艾特帮助", "desc": "渲染本帮助图。"},
+                ],
+            },
+            {
+                "title": "数据",
+                "items": [
+                    {"command": "clear_at / 清除艾特数据", "desc": "清除自己的艾特记录和待提醒记录。"},
+                    {"command": "clear_all / 清除全部艾特数据", "desc": "管理员或主人清除全部记录。"},
+                ],
+            },
+            {
+                "title": "提醒",
+                "items": [
+                    {"command": "#开启本群艾特提醒 / #关闭本群艾特提醒", "desc": "管理员控制本群被动提醒。"},
+                    {"command": "#开启我的艾特提醒 / #关闭我的艾特提醒", "desc": "控制自己的被动提醒。"},
+                    {"command": "#艾特提醒状态", "desc": "查看本群和自己的提醒状态。"},
+                ],
+            },
+            {
+                "title": "上下文",
+                "items": [
+                    {"command": "开启艾特上下文 / 关闭艾特上下文", "desc": "管理员控制查询截图是否记录艾特前后消息。"},
+                    {"command": "#开启提醒上下文 / #关闭提醒上下文", "desc": "管理员控制提醒截图是否带上下文。"},
+                    {"command": "#设置提醒上下文 2,2", "desc": "设置提醒截图前后上下文条数。"},
+                ],
+            },
+        ]
+
+    def _help_plain_text(self, sections: list[dict[str, Any]]) -> str:
+        lines = ["谁艾特我 Pro 帮助"]
+        for section in sections:
+            lines.append("")
+            lines.append(str(section.get("title") or ""))
+            for item in section.get("items") or []:
+                lines.append(f"- {item.get('command')}: {item.get('desc')}")
+        return "\n".join(lines)
+
+    async def _try_send_help_forward_text(self, event: AstrMessageEvent, sections: list[dict[str, Any]]) -> bool:
+        group_id = self._group_id(event)
+        if not group_id:
+            return False
+        self_id = self._self_id(event) or "10000"
+        bot_name = await self._bot_name(event, group_id)
+        uin = self._numeric_id(self_id)
+        nodes = [
+            {
+                "type": "node",
+                "data": {
+                    "name": bot_name,
+                    "uin": uin,
+                    "content": [{"type": "text", "data": {"text": "谁艾特我 Pro 帮助"}}],
+                },
+            }
+        ]
+        for section in sections:
+            lines = [str(section.get("title") or "")]
+            for item in section.get("items") or []:
+                lines.append(f"- {item.get('command')}: {item.get('desc')}")
+            nodes.append(
+                {
+                    "type": "node",
+                    "data": {
+                        "name": bot_name,
+                        "uin": uin,
+                        "content": [{"type": "text", "data": {"text": "\n".join(lines)}}],
+                    },
+                }
+            )
+        sent = await self._try_onebot_action(
+            event,
+            "send_group_forward_msg",
+            group_id=self._numeric_id(group_id),
+            messages=nodes,
+        )
+        if not sent:
+            logger.warning("[who_at_me] records forward message unavailable; suppressing long plain-text fallback")
+        return sent
+
+    def _records_forward_unavailable_text(self, *, reminder: bool = False) -> str:
+        if reminder:
+            return "当前平台暂时无法确认合并消息是否发送成功，已保留艾特提醒记录；请稍后重试或切换为图片渲染方式。"
+        return "当前平台暂时无法确认合并消息是否发送成功；请稍后重试或切换为图片渲染方式。"
+
+    async def _try_send_records_forward_text(
+        self,
+        event: AstrMessageEvent,
+        records: list[dict[str, Any]],
+        target_name: str,
+        *,
+        title: str = "",
+        limit: int = 80,
+        reverse: bool = True,
+    ) -> bool:
+        group_id = self._group_id(event)
+        if not group_id or not records:
+            return False
+        self_id = self._self_id(event) or "10000"
+        bot_name = await self._bot_name(event, group_id)
+        bot_uin = self._numeric_id(self_id)
+        nodes: list[dict[str, Any]] = []
+        if title.strip():
+            nodes.append(self._forward_text_node(bot_name, bot_uin, title.strip()))
+        messages = self._forward_timeline_messages(records, target_name, reverse=reverse)
+        for msg in messages[:limit]:
+            message_id = self._record_forward_message_id(msg)
+            if message_id:
+                nodes.append({"type": "node", "data": {"id": message_id}})
+                continue
+            name = str(msg.get("nickname") or msg.get("user_id") or bot_name)
+            uin = self._numeric_id(msg.get("user_id") or self_id)
+            nodes.append(self._forward_text_node(name, uin, self._message_forward_text(msg, target_name)))
+        if len(messages) > limit:
+            nodes.append(self._forward_text_node(bot_name, bot_uin, f"还有 {len(messages) - limit} 条消息未展示。"))
+        return await self._try_onebot_action(
+            event,
+            "send_group_forward_msg",
+            group_id=self._numeric_id(group_id),
+            messages=nodes,
+        )
+
+    def _forward_timeline_messages(
+        self,
+        records: list[dict[str, Any]],
+        target_name: str,
+        *,
+        reverse: bool,
+    ) -> list[dict[str, Any]]:
+        blocks = self._build_blocks(records, target_name, reverse=reverse)
+        messages: list[dict[str, Any]] = []
+        for block in blocks:
+            for msg in block.get("msgs") or []:
+                if isinstance(msg, dict):
+                    messages.append(msg)
+        return messages
+
+    def _record_forward_message_id(self, record: dict[str, Any]) -> str:
+        for key in ("message_id", "messageId", "msg_id", "msgId", "id"):
+            value = str(record.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _forward_text_node(self, name: str, uin: Any, text: str) -> dict[str, Any]:
+        return {
+            "type": "node",
+            "data": {
+                "name": name,
+                "uin": uin,
+                "content": [{"type": "text", "data": {"text": text}}],
+            },
+        }
+
+    def _record_forward_text(self, record: dict[str, Any], target_name: str) -> str:
+        time_text = self._time_text(record.get("time"))
+        poke = record.get("poke")
+        if isinstance(poke, dict):
+            message = (
+                f"{poke.get('actor') or record.get('name') or '用户'} "
+                f"{poke.get('action') or '拍了拍'} "
+                f"{poke.get('target') or target_name}{poke.get('suffix') or ''}"
+            )
+        else:
+            message = str(record.get("message") or "[无文字]").strip()
+        image_count = len(record.get("images") or record.get("image") or [])
+        media_count = len(record.get("media") or [])
+        suffixes = []
+        if image_count:
+            suffixes.append(f"{image_count} 张图")
+        if media_count:
+            suffixes.append(f"{media_count} 个媒体")
+        suffix = f"（{', '.join(suffixes)}）" if suffixes else ""
+        prefix = f"{time_text}\n" if time_text else ""
+        return f"{prefix}@{target_name} {message}{suffix}".strip()
+
+    def _message_forward_text(self, msg: dict[str, Any], target_name: str) -> str:
+        time_text = str(msg.get("time_text") or "")
+        if msg.get("is_poke"):
+            message = (
+                f"{msg.get('poke_actor') or msg.get('nickname') or '用户'} "
+                f"{msg.get('poke_action') or '拍了拍'} "
+                f"{msg.get('poke_target') or target_name}{msg.get('poke_suffix') or ''}"
+            )
+        else:
+            message = str(msg.get("message") or "").strip() or "[无文字]"
+        suffixes = []
+        if msg.get("images"):
+            suffixes.append(f"{len(msg.get('images') or [])} 张图")
+        if msg.get("media"):
+            suffixes.append(f"{len(msg.get('media') or [])} 个媒体")
+        suffix = f"（{', '.join(suffixes)}）" if suffixes else ""
+        prefix = f"{time_text}\n" if time_text else ""
+        at_prefix = f"@{target_name} " if msg.get("is_at") else ""
+        return f"{prefix}{at_prefix}{message}{suffix}".strip()
+
+    async def _query_waiting_text(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        target: str,
+        target_name: str,
+    ) -> str:
+        waiting_template = self._config_str("message", "waiting_text_template", default="让{bot_name}看看谁艾特过你哦，稍等一下~")
+        if not waiting_template.strip():
+            return ""
+        is_self_query = target == self._sender_id(event)
+        target_pronoun = "你" if is_self_query else "ta"
+        if not is_self_query and waiting_template == "让{bot_name}看看谁艾特过你哦，稍等一下~":
+            waiting_template = "让{bot_name}看看谁艾特过ta哦，稍等一下~"
+        return self._format_template(
+            waiting_template,
+            bot_name=await self._bot_name(event, group_id),
+            target_name=target_name,
+            target_pronoun=target_pronoun,
+        ).strip()
 
     async def _query(
         self,
@@ -941,6 +1220,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         query_reverse = self._query_reverse_order()
         records = self._select_query_records(records, target_name, target, reverse=query_reverse)
         records = await self._resolve_record_pokes(event, group_id, records)
+        waiting_text = await self._query_waiting_text(event, group_id, target, target_name)
+        if self._render_text_only():
+            if waiting_text and not await self._try_send(event, event.plain_result(waiting_text)):
+                return [event.plain_result(waiting_text)]
+            if await self._try_send_records_forward_text(event, records, target_name):
+                return []
+            return [event.plain_result(self._records_forward_unavailable_text())]
+
         records, temporary_image_paths = await self._prepare_records_for_render(records)
         blocks = self._build_blocks(records, target_name, target, reverse=query_reverse)
         chunks = self._chunk_blocks(blocks)
@@ -948,23 +1235,13 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._log_query_image_diagnostics(group_id, target, records, page_count=len(chunks))
         if not chunks:
             self._delete_cached_image_paths(temporary_image_paths)
-            return [event.plain_result(self._plain_summary(records, target_name))]
+            if await self._try_send_records_forward_text(event, records, target_name):
+                return []
+            return [event.plain_result(self._records_forward_unavailable_text())]
 
-        is_self_query = target == self._sender_id(event)
-        target_pronoun = "你" if is_self_query else "ta"
-        waiting_template = self._config_str("message", "waiting_text_template", default="让{bot_name}看看谁艾特过你哦，稍等一下~")
-        if waiting_template.strip():
-            if not is_self_query and waiting_template == "让{bot_name}看看谁艾特过你哦，稍等一下~":
-                waiting_template = "让{bot_name}看看谁艾特过ta哦，稍等一下~"
-            waiting_text = self._format_template(
-                waiting_template,
-                bot_name=await self._bot_name(event, group_id),
-                target_name=target_name,
-                target_pronoun=target_pronoun,
-            ).strip()
-            if waiting_text and not await self._try_send(event, event.plain_result(waiting_text)):
-                self._delete_cached_image_paths(temporary_image_paths)
-                return [event.plain_result(waiting_text)]
+        if waiting_text and not await self._try_send(event, event.plain_result(waiting_text)):
+            self._delete_cached_image_paths(temporary_image_paths)
+            return [event.plain_result(waiting_text)]
 
         image_paths: list[str] = []
         group_name = await self._group_name(event, group_id)
@@ -998,7 +1275,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                         raise RuntimeError(f"发送图片失败: {image_path}")
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送图片失败: {exc}")
-            await self._try_send(event, event.plain_result(self._plain_summary(records, target_name)))
+            if not await self._try_send_records_forward_text(event, records, target_name):
+                await self._try_send(event, event.plain_result(self._records_forward_unavailable_text()))
         finally:
             self._delete_cached_image_paths(temporary_image_paths)
 
@@ -1151,7 +1429,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             "member_title": member_title,
             "initial": self._initial(nickname),
             "avatar": avatar,
-            "message_id": str(data.get("message_id") or ""),
+            "message_id": str(data.get("message_id") or data.get("messageId") or data.get("msg_id") or data.get("msgId") or data.get("id") or ""),
             "order": self._record_order(data),
             "received_order": data.get("received_order"),
             "message": message,

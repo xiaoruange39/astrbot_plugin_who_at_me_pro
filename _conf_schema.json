@@ -157,43 +157,59 @@
                    "description":  "图片渲染配置",
                    "type":  "object",
                    "items":  {
+                                 "render_mode":  {
+                                                     "description":  "渲染方式",
+                                                     "type":  "string",
+                                                     "default":  "自动",
+                                                     "options":  [
+                                                                     "自动",
+                                                                     "API渲染",
+                                                                     "本地浏览器渲染",
+                                                                     "纯文字"
+                                                                 ],
+                                                     "hint":  "自动：按优先浏览器渲染配置选择首选渲染器，失败后回退另一种渲染；API渲染：仅使用 AstrBot html_render；本地浏览器渲染：仅使用 Playwright/Chromium；纯文字：不渲染图片，查询和提醒仅使用合并消息展示记录，平台不支持合并消息时只发送短提示。"
+                                                 },
                                  "prefer_browser":  {
                                                         "description":  "优先使用 Playwright/Chromium 浏览器渲染",
                                                         "type":  "bool",
-                                                        "default":  true
+                                                        "default":  true,
+                                                        "hint":  "仅在渲染方式为“自动”时生效。"
                                                     },
                                  "image_quality":  {
                                                        "description":  "JPEG 图片质量",
                                                        "type":  "int",
                                                        "default":  92,
-                                                       "hint":  "范围建议 60-100。"
+                                                       "hint":  "范围建议 60-100。对 Playwright/Chromium 截图和 API 渲染的 JPEG 兜底输出生效；纯文字模式不生效。"
                                                    },
                                  "browser_timeout_seconds":  {
                                                                  "description":  "单次渲染总超时秒数",
                                                                  "type":  "int",
-                                                                 "default":  25
+                                                                 "default":  25,
+                                                                 "hint":  "对自动、API渲染、本地浏览器渲染的图片生成总耗时生效；纯文字模式不生效。"
                                                              },
                                  "page_timeout_ms":  {
                                                          "description":  "浏览器页面加载超时毫秒数",
                                                          "type":  "int",
-                                                         "default":  20000
+                                                         "default":  20000,
+                                                         "hint":  "仅 Playwright/Chromium 浏览器渲染生效；API渲染和纯文字模式不生效。"
                                                      },
                                  "header_image_url":  {
                                                           "description":  "结果图顶部状态栏图片 URL / 本地路径",
                                                           "type":  "string",
                                                           "default":  "",
-                                                          "hint":  "可选项。留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
+                                                          "hint":  "仅结果图截图模板生效；帮助图和纯文字模式不生效。可选项，留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
                                                       },
                                  "footer_image_url":  {
                                                           "description":  "结果图底部图片 URL / 本地路径",
                                                           "type":  "string",
                                                           "default":  "",
-                                                          "hint":  "可选项。留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
+                                                          "hint":  "仅结果图截图模板生效；帮助图和纯文字模式不生效。可选项，留空时使用插件内置本地图片；Page 上传的自定义图片优先级更高。"
                                                       },
                                  "cleanup_render_hours":  {
                                                               "description":  "渲染临时图片保留小时数",
                                                               "type":  "int",
-                                                              "default":  24
+                                                              "default":  24,
+                                                              "hint":  "清理图片渲染产生的临时文件；纯文字模式通常不会产生渲染临时图。"
                                                           }
                              }
                },
