@@ -93,7 +93,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         定期执行维护任务
         """
         # 启动后先等 1 分钟
-        await asyncio.sleep(60)
+        await asyncio.sleep(10)
         while True:
             try:
                 retention_hours = self._image_cache_retention_hours()

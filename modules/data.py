@@ -718,7 +718,13 @@ class DataMixin:
             )
             for path in all_paths:
                 try:
-                    if not path.is_file() or path.stat().st_mtime >= cutoff_ts:
+                    if not path.is_file():
+                        continue
+                    if path.stat().st_mtime >= cutoff_ts and not self._cache_path_expired_by_date_dir(
+                        path,
+                        cache_dir,
+                        cutoff_ts,
+                    ):
                         continue
                     path.unlink(missing_ok=True)
                     removed_files += 1
@@ -747,6 +753,21 @@ class DataMixin:
         except Exception as exc:
             logger.debug(f"[谁艾特我] 清理过期缓存失败: {exc}")
             return 0
+
+    def _cache_path_expired_by_date_dir(self, path: Path, cache_dir: Path, cutoff_ts: float) -> bool:
+        try:
+            relative = path.relative_to(cache_dir)
+        except ValueError:
+            return False
+        cutoff_date = datetime.fromtimestamp(cutoff_ts).date()
+        for part in relative.parts[:-1]:
+            if not re.fullmatch(r"\d{8}", part):
+                continue
+            try:
+                return datetime.strptime(part, "%Y%m%d").date() < cutoff_date
+            except ValueError:
+                return False
+        return False
 
     def _delete_directory_recursive(self, path: Path) -> None:
         if not path.exists():

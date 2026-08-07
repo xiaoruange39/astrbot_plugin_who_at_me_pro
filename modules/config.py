@@ -60,6 +60,9 @@ class ConfigMixin:
     def _recent_image_cache_records(self) -> int:
         return max(0, self._config_int("record", "recent_image_cache_records", default=RECENT_IMAGE_CACHE_RECORDS))
 
+    def _image_cache_retention_hours(self) -> int:
+        return max(0, self._config_int("record", "image_cache_retention_hours", default=IMAGE_CACHE_RETENTION_HOURS))
+
     def _query_context_max_messages(self) -> int:
         return max(1, self._config_int("record", "query_context_max_messages", default=MAX_CONTEXT_MESSAGES))
 
