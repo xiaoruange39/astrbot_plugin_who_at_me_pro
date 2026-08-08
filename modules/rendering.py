@@ -28,6 +28,10 @@ def _load_help_template() -> str:
 HTML_TEMPLATE = _load_result_template()
 HELP_TEMPLATE = _load_help_template()
 
+# 协议端只是没等到 NTQQ 的回执，消息大概率已经发出去了，不能当作发送失败去回退重发。
+SEND_UNKNOWN_RETCODES = {1200}
+SEND_UNKNOWN_TOKENS = ("invoke timeout", "send timeout", "sendmsg timeout", "timed out")
+
 
 class RenderingMixin:
     async def _render_help_image(self, data: dict[str, Any]) -> str:
@@ -121,11 +125,36 @@ class RenderingMixin:
             result.append(await asyncio.wait_for(self._render_html_with_t2i(HTML_TEMPLATE, data), timeout=timeout))
         return result
 
+    def _send_outcome_unknown(self, exc: BaseException) -> bool:
+        if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+            return True
+        retcode = getattr(exc, "retcode", None)
+        try:
+            if retcode is not None and int(retcode) in SEND_UNKNOWN_RETCODES:
+                return True
+        except (TypeError, ValueError):
+            pass
+        text = " ".join(str(getattr(exc, attr, "") or "") for attr in ("message", "wording"))
+        text = f"{text} {exc}".lower()
+        return any(token in text for token in SEND_UNKNOWN_TOKENS)
+
+    def _send_error_text(self, exc: BaseException, limit: int = 200) -> str:
+        text = str(exc).replace("\n", " ").replace("\r", " ")
+        return text if len(text) <= limit else text[:limit] + "..."
+
+    def _assume_sent_on_timeout(self, exc: BaseException, action: str) -> bool:
+        if not self._send_outcome_unknown(exc):
+            return False
+        logger.warning(f"[谁艾特我] {action}未收到协议端回执，按已送达处理，不再回退: {self._send_error_text(exc)}")
+        return True
+
     async def _try_send(self, event: AstrMessageEvent, result: Any) -> bool:
         try:
             await event.send(result)
             return True
         except Exception as exc:
+            if self._assume_sent_on_timeout(exc, "主动发送"):
+                return True
             logger.error(f"[谁艾特我] 主动发送失败: {exc}")
             return False
 
@@ -140,6 +169,8 @@ class RenderingMixin:
             await event.send(event.chain_result([self._image_component(path) for path in image_paths]))
             return True
         except Exception as exc:
+            if self._assume_sent_on_timeout(exc, "普通合并发送图片"):
+                return True
             logger.warning(f"[谁艾特我] 普通合并发送图片失败，回退到分开发送: {exc}")
             return False
 
@@ -154,6 +185,8 @@ class RenderingMixin:
             await event.send(event.chain_result(components))
             return True
         except Exception as exc:
+            if self._assume_sent_on_timeout(exc, "合并发送提醒"):
+                return True
             logger.warning(f"[谁艾特我] 合并发送提醒失败，回退到分开发送: {exc}")
             return False
 
@@ -221,8 +254,12 @@ class RenderingMixin:
                 await caller(action, **kwargs)
                 return True
             except Exception as exc:
+                if self._assume_sent_on_timeout(exc, f"调用协议端 API {action}"):
+                    return True
                 logger.debug(f"[谁艾特我] 调用协议端 API {action} 失败: {exc}")
         except Exception as exc:
+            if self._assume_sent_on_timeout(exc, f"调用协议端 API {action}"):
+                return True
             logger.debug(f"[谁艾特我] 调用协议端 API {action} 失败: {exc}")
         return False
 
