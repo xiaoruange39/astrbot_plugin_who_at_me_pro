@@ -875,7 +875,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             if delivered:
                 self._drop_records_image_cache(original_pending, delete_files=True)
                 return
-            await self._try_send(event, event.plain_result(self._records_forward_unavailable_text(reminder=True)))
+            logger.warning(
+                f"[谁艾特我] 合并转发发送失败（text 渲染模式），未向群内提示，"
+                f"已保留 {len(original_pending)} 条待提醒记录: group={group_id} user={user_id}"
+            )
             await self._restore_pending_reminders(group_id, user_id, original_pending)
             return
 
@@ -916,10 +919,15 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 else:
                     if not await self._try_send(event, event.plain_result(reminder_text)):
                         raise RuntimeError("failed to send reminder text")
-                    delivered = True
+                    image_delivered = False
                     for image_path in image_paths:
-                        if not await self._try_send(event, event.image_result(image_path)):
+                        if await self._try_send(event, event.image_result(image_path)):
+                            image_delivered = True
+                        else:
                             logger.warning(f"[谁艾特我] 提醒图片回退发送失败: {image_path}")
+                    if not image_delivered:
+                        raise RuntimeError("failed to send reminder images")
+                    delivered = True
             elif await self._try_send_images(event, image_paths):
                 delivered = True
             else:
@@ -942,7 +950,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     reverse=False,
                 )
                 if not delivered:
-                    await self._try_send(event, event.plain_result(self._records_forward_unavailable_text(reminder=True)))
+                    logger.warning(
+                        f"[谁艾特我] 图片与合并转发均发送失败，未向群内提示，"
+                        f"已保留 {len(original_pending)} 条待提醒记录: group={group_id} user={user_id}"
+                    )
             if delivered:
                 self._drop_records_image_cache(original_pending, delete_files=True)
             else:
@@ -1060,10 +1071,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             logger.warning("[who_at_me] records forward message unavailable; suppressing long plain-text fallback")
         return sent
 
-    def _records_forward_unavailable_text(self, *, reminder: bool = False) -> str:
-        if reminder:
-            return "当前平台暂时无法确认合并消息是否发送成功，已保留艾特提醒记录；请稍后重试或切换为图片渲染方式。"
-        return "当前平台暂时无法确认合并消息是否发送成功；请稍后重试或切换为图片渲染方式。"
+    def _records_forward_unavailable_text(self) -> str:
+        return "当前平台的合并消息发送失败了；请稍后重试或换用图片渲染方式。"
 
     async def _try_send_records_forward_text(
         self,
