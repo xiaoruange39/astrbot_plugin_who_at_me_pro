@@ -1091,19 +1091,39 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         bot_name = await self._bot_name(event, group_id)
         bot_uin = self._numeric_id(self_id)
         nodes: list[dict[str, Any]] = []
-        if title.strip():
-            nodes.append(self._forward_text_node(bot_name, bot_uin, title.strip()))
         messages = self._forward_timeline_messages(records, target_name, reverse=reverse)
+        if title.strip():
+            title_time = self._forward_node_time(messages[0]) if messages else 0
+            nodes.append(self._forward_text_node(bot_name, bot_uin, title.strip(), time_value=title_time))
         for msg in messages[:limit]:
             message_id = self._record_forward_message_id(msg)
             if message_id:
-                nodes.append({"type": "node", "data": {"id": message_id}})
+                data = {"id": message_id}
+                timestamp = self._forward_node_time(msg)
+                if timestamp > 0:
+                    data["time"] = timestamp
+                nodes.append({"type": "node", "data": data})
                 continue
             name = str(msg.get("nickname") or msg.get("user_id") or bot_name)
             uin = self._numeric_id(msg.get("user_id") or self_id)
-            nodes.append(self._forward_text_node(name, uin, self._message_forward_text(msg, target_name)))
+            nodes.append(
+                self._forward_text_node(
+                    name,
+                    uin,
+                    self._message_forward_text(msg, target_name),
+                    time_value=self._forward_node_time(msg),
+                )
+            )
         if len(messages) > limit:
-            nodes.append(self._forward_text_node(bot_name, bot_uin, f"还有 {len(messages) - limit} 条消息未展示。"))
+            overflow_time = self._forward_node_time(messages[limit - 1]) if limit > 0 else 0
+            nodes.append(
+                self._forward_text_node(
+                    bot_name,
+                    bot_uin,
+                    f"还有 {len(messages) - limit} 条消息未展示。",
+                    time_value=overflow_time,
+                )
+            )
         return await self._try_onebot_action(
             event,
             "send_group_forward_msg",
@@ -1133,15 +1153,30 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 return value
         return ""
 
-    def _forward_text_node(self, name: str, uin: Any, text: str) -> dict[str, Any]:
+    def _forward_text_node(self, name: str, uin: Any, text: str, *, time_value: Any = None) -> dict[str, Any]:
+        data = {
+            "name": name,
+            "uin": uin,
+            "content": [{"type": "text", "data": {"text": text}}],
+        }
+        timestamp = self._forward_node_time(time_value)
+        if timestamp > 0:
+            data["time"] = timestamp
         return {
             "type": "node",
-            "data": {
-                "name": name,
-                "uin": uin,
-                "content": [{"type": "text", "data": {"text": text}}],
-            },
+            "data": data,
         }
+
+    def _forward_node_time(self, value: Any) -> int:
+        if isinstance(value, dict):
+            value = value.get("time")
+        try:
+            timestamp = int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+        if timestamp > 10_000_000_000:
+            timestamp //= 1000
+        return timestamp if timestamp > 0 else 0
 
     def _record_forward_text(self, record: dict[str, Any], target_name: str) -> str:
         time_text = self._time_text(record.get("time"))
