@@ -881,16 +881,13 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             await self._restore_pending_reminders(group_id, user_id, original_pending)
             return
 
-        if reminder_text and not await self._try_send(event, event.plain_result(reminder_text)):
-            await self._restore_pending_reminders(group_id, user_id, original_pending)
-            return
-
         pending, temporary_image_paths = await self._prepare_records_for_render(pending)
         blocks = self._build_blocks(pending, target_name, user_id, reverse=False)
         chunks = self._chunk_blocks(blocks)
         chunks = self._limit_chunks(chunks, self._max_reminder_pages(), keep_latest=True)
         image_paths: list[str] = []
         delivered = False
+        text_sent = False
         group_name = await self._group_name(event, group_id)
         member_count = await self._member_count(event, group_id)
         context_enabled = any(item.get("is_context") for item in pending)
@@ -916,7 +913,21 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 ]
             )
 
-            if await self._try_send_images(event, image_paths):
+            if reminder_text:
+                if await self._try_send_text_images(event, reminder_text, image_paths):
+                    delivered = True
+                else:
+                    if not await self._try_send(event, event.plain_result(reminder_text)):
+                        raise RuntimeError("failed to send reminder text")
+                    text_sent = True
+                    for image_path in image_paths:
+                        if await self._try_send(event, event.image_result(image_path)):
+                            delivered = True
+                        else:
+                            logger.warning(f"[谁艾特我] 提醒图片回退发送失败: {image_path}")
+                    if not delivered:
+                        raise RuntimeError("failed to send reminder images")
+            elif await self._try_send_images(event, image_paths):
                 delivered = True
             else:
                 for image_path in image_paths:
@@ -934,7 +945,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     event,
                     pending,
                     target_name,
-                    title="",
+                    title="" if text_sent else reminder_text,
                 )
                 if not delivered:
                     logger.warning(
