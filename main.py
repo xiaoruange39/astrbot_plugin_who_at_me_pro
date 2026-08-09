@@ -870,7 +870,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 pending,
                 target_name,
                 title="",
-                reverse=False,
             )
             if delivered:
                 self._drop_records_image_cache(original_pending, delete_files=True)
@@ -879,6 +878,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 f"[谁艾特我] 合并转发发送失败（text 渲染模式），未向群内提示，"
                 f"已保留 {len(original_pending)} 条待提醒记录: group={group_id} user={user_id}"
             )
+            await self._restore_pending_reminders(group_id, user_id, original_pending)
+            return
+
+        if reminder_text and not await self._try_send(event, event.plain_result(reminder_text)):
             await self._restore_pending_reminders(group_id, user_id, original_pending)
             return
 
@@ -913,22 +916,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 ]
             )
 
-            if reminder_text:
-                if await self._try_send_text_images(event, reminder_text, image_paths):
-                    delivered = True
-                else:
-                    if not await self._try_send(event, event.plain_result(reminder_text)):
-                        raise RuntimeError("failed to send reminder text")
-                    image_delivered = False
-                    for image_path in image_paths:
-                        if await self._try_send(event, event.image_result(image_path)):
-                            image_delivered = True
-                        else:
-                            logger.warning(f"[谁艾特我] 提醒图片回退发送失败: {image_path}")
-                    if not image_delivered:
-                        raise RuntimeError("failed to send reminder images")
-                    delivered = True
-            elif await self._try_send_images(event, image_paths):
+            if await self._try_send_images(event, image_paths):
                 delivered = True
             else:
                 for image_path in image_paths:
@@ -946,8 +934,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     event,
                     pending,
                     target_name,
-                    title=reminder_text or f"{target_name} 的艾特提醒",
-                    reverse=False,
+                    title="",
                 )
                 if not delivered:
                     logger.warning(
@@ -1082,7 +1069,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         *,
         title: str = "",
         limit: int = 80,
-        reverse: bool = True,
     ) -> bool:
         group_id = self._group_id(event)
         if not group_id or not records:
@@ -1091,7 +1077,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         bot_name = await self._bot_name(event, group_id)
         bot_uin = self._numeric_id(self_id)
         nodes: list[dict[str, Any]] = []
-        messages = self._forward_timeline_messages(records, target_name, reverse=reverse)
+        messages = self._forward_timeline_messages(records, target_name)
         if title.strip():
             title_time = self._forward_node_time(messages[0]) if messages else 0
             nodes.append(self._forward_text_node(bot_name, bot_uin, title.strip(), time_value=title_time))
@@ -1135,10 +1121,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self,
         records: list[dict[str, Any]],
         target_name: str,
-        *,
-        reverse: bool,
     ) -> list[dict[str, Any]]:
-        blocks = self._build_blocks(records, target_name, reverse=reverse)
+        blocks = self._build_blocks(records, target_name, reverse=False)
         messages: list[dict[str, Any]] = []
         for block in blocks:
             for msg in block.get("msgs") or []:
@@ -1262,10 +1246,11 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         target_name = await self._target_name(event, group_id, target)
         total_records = len(records)
         query_reverse = self._query_reverse_order()
-        records = self._select_query_records(records, target_name, target, reverse=query_reverse)
+        text_only = self._render_text_only()
+        records = self._select_query_records(records, target_name, target, reverse=False if text_only else query_reverse)
         records = await self._resolve_record_pokes(event, group_id, records)
         waiting_text = await self._query_waiting_text(event, group_id, target, target_name)
-        if self._render_text_only():
+        if text_only:
             if waiting_text and not await self._try_send(event, event.plain_result(waiting_text)):
                 return [event.plain_result(waiting_text)]
             if await self._try_send_records_forward_text(event, records, target_name):
