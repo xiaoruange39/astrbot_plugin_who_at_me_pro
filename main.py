@@ -941,6 +941,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         except Exception as exc:
             logger.error(f"[谁艾特我] 渲染或发送提醒失败: {exc}")
             if not delivered:
+                if reminder_text and not text_sent:
+                    text_sent = await self._try_send(event, event.plain_result(reminder_text))
                 delivered = await self._try_send_records_forward_text(
                     event,
                     pending,
