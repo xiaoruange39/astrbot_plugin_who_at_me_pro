@@ -70,6 +70,17 @@ IMAGE_SOURCE_KEYS = [
     "file_uuid",
     "fileUuid",
 ]
+IMAGE_FILE_ID_KEYS = [
+    "file",
+    "file_id",
+    "fileId",
+    "image_id",
+    "imageId",
+    "file_unique",
+    "fileUnique",
+    "file_uuid",
+    "fileUuid",
+]
 CHAT_RECORD_TEXT = "[聊天记录]"
 CHAT_RECORD_SEGMENT_TYPES = {"forward", "forward_msg", "merged_forward", "multimsg"}
 RECALL_NOTICE_TYPES = {"group_recall", "friend_recall", "recall", "message_recall", "revoke", "message_revoke"}
@@ -89,7 +100,13 @@ class MessageMixin:
         member_info = member_info or {}
         role = str(member_info.get("role") or getattr(sender, "role", "") or self._raw_sender_value(event, "role") or "member")
         sender_name = self._display_name(member_info.get("card"), member_info.get("nickname"), self._sender_name(event), sender_id)
-        images = await self._images(event)
+        try:
+            images = await self._images(event)
+        except Exception as exc:
+            logger.warning(
+                f"[who_at_me] image resolution failed; recording without images: {type(exc).__name__}: {exc}"
+            )
+            images = []
         media = self._media(event)
         message = self._message_text_for_record(event, mentions or [])
         poke = await self._poke_message(event, group_id, sender_name)
@@ -319,14 +336,15 @@ class MessageMixin:
     async def _images(self, event: AstrMessageEvent) -> list[str]:
         raw_segments = self._raw_message_segments(event)
         chain_segments = self._message_chain(event)
-        raw_images = self._segments_images(raw_segments) if raw_segments else []
-        chain_images = self._segments_images(chain_segments)
+        fallbacks: dict[str, str] = {}
+        raw_images = self._segments_images(raw_segments, fallbacks) if raw_segments else []
+        chain_images = self._segments_images(chain_segments, fallbacks)
         images = chain_images or raw_images
         if not images:
             for text in self._raw_message_texts(event):
-                images.extend(self._images_from_cq(text))
+                images.extend(self._images_from_cq(text, fallbacks))
         candidates = self._unique_strings(images)
-        resolved = await self._resolve_image_sources(event, candidates)
+        resolved = await self._resolve_image_sources(event, candidates, fallbacks)
         raw_texts = self._raw_message_texts(event)
         if not resolved and self._has_image_debug_hint([*raw_segments, *chain_segments, *raw_texts]):
             logger.warning(
@@ -339,7 +357,12 @@ class MessageMixin:
             logger.warning(f"[who_at_me] image candidates unresolved; candidates={self._debug_text_values(candidates)}")
         return resolved
 
-    async def _resolve_image_sources(self, event: AstrMessageEvent, images: list[str]) -> list[str]:
+    async def _resolve_image_sources(
+        self,
+        event: AstrMessageEvent,
+        images: list[str],
+        fallbacks: dict[str, str] | None = None,
+    ) -> list[str]:
         result = []
         for image in images:
             text = str(image or "").strip()
@@ -349,6 +372,19 @@ class MessageMixin:
             if validated:
                 result.append(validated)
                 continue
+            # 主来源（通常是 url）不可用时，改用同一图片段里的 file id 走协议端重取，
+            # 避免整张图片因为 URL 畸形而丢失。
+            fallback = str((fallbacks or {}).get(text) or "").strip()
+            if fallback and fallback != text:
+                resolved = await self._resolve_onebot_image(event, fallback)
+                validated = await self._validated_message_image_source(resolved)
+                if validated:
+                    logger.info(
+                        "[who_at_me] primary image source rejected; recovered via file id "
+                        f"fallback={self._debug_text(fallback)}"
+                    )
+                    result.append(validated)
+                    continue
             if not self._can_resolve_onebot_image_source(text):
                 continue
             resolved = await self._resolve_onebot_image(event, text)
@@ -978,7 +1014,7 @@ class MessageMixin:
                     texts.append(summary)
         return "".join(texts).strip()
 
-    def _segments_images(self, segments: list[Any]) -> list[str]:
+    def _segments_images(self, segments: list[Any], fallbacks: dict[str, str] | None = None) -> list[str]:
         urls = []
         for segment in segments:
             if self._is_reference_segment(segment):
@@ -997,6 +1033,8 @@ class MessageMixin:
                 source = self._first_image_source(values)
                 if source:
                     urls.append(source)
+                    if fallbacks is not None:
+                        self._register_image_fallback(fallbacks, source, self._segment_values(segment, IMAGE_FILE_ID_KEYS))
                 continue
             data = self._segment_data(segment)
             base64_value = self._first_mapping_value(data, ["base64"]) if data else None
@@ -1011,6 +1049,16 @@ class MessageMixin:
                 data = self._segment_data(segment)
                 logger.debug(f"[谁艾特我] 图片段未找到可渲染来源: type={seg_type}, keys={list(data.keys()) if data else []}")
         return self._unique_strings(urls)
+
+    def _register_image_fallback(self, fallbacks: dict[str, str], source: str, values: list[Any]) -> None:
+        key = str(source or "").strip()
+        if not key or key in fallbacks:
+            return
+        for value in values:
+            candidate = str(value or "").strip()
+            if candidate and candidate != key:
+                fallbacks[key] = candidate
+                return
 
     def _segment_image_values(self, segment: Any, names: list[str] | None = None) -> list[Any]:
         values = self._segment_values(segment, names or IMAGE_SOURCE_KEYS)
@@ -1426,7 +1474,7 @@ class MessageMixin:
         )
         return f"@{value}" if value else " "
 
-    def _images_from_cq(self, text: str) -> list[str]:
+    def _images_from_cq(self, text: str, fallbacks: dict[str, str] | None = None) -> list[str]:
         images = []
         for match in re.finditer(r"\[CQ:([^,\]]+),([^\]]+)\]", text or "", re.I):
             seg_type = match.group(1).lower()
@@ -1438,6 +1486,12 @@ class MessageMixin:
             value = self._first_mapping_value(data, names)
             if value:
                 images.append(value)
+                if fallbacks is not None:
+                    self._register_image_fallback(
+                        fallbacks,
+                        value,
+                        [data.get(key) for key in IMAGE_FILE_ID_KEYS],
+                    )
                 continue
             base64_value = data.get("base64")
             if base64_value:

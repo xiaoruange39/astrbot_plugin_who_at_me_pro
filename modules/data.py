@@ -481,19 +481,38 @@ class DataMixin:
             raise ValueError("inline image is too large")
         return data, image_type
 
-    def _is_allowed_remote_image_url(self, value: str) -> bool:
-        parsed = urlparse(value)
-        if parsed.scheme.lower() not in {"http", "https"}:
+    def _is_valid_dns_name(self, host: str) -> bool:
+        text = str(host or "")
+        if text.endswith("."):
+            text = text[:-1]
+        if not text or len(text.encode("utf-8", "ignore")) > 253:
             return False
-        host = parsed.hostname
+        labels = text.split(".")
+        return all(label and len(label.encode("utf-8", "ignore")) <= 63 for label in labels)
+
+    def _is_allowed_remote_image_url(self, value: str) -> bool:
+        try:
+            parsed = urlparse(value)
+            scheme = parsed.scheme.lower()
+            host = parsed.hostname
+        except ValueError:
+            return False
+        if scheme not in {"http", "https"}:
+            return False
         if not host:
             return False
         host_text = host.lower().strip("[]")
         if host_text in {"localhost", "localhost.localdomain"} or host_text.endswith(".local"):
             return False
         try:
+            ipaddress.ip_address(host_text)
+        except ValueError:
+            if not self._is_valid_dns_name(host_text):
+                return False
+        try:
             infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        except OSError:
+        except (OSError, ValueError):
+            # idna 编码超长 label 时抛 UnicodeError，它是 ValueError 而不是 OSError 的子类。
             return False
         for info in infos:
             try:
