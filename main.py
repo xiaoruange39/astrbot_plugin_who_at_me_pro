@@ -28,7 +28,6 @@ if __package__:
         REMINDER_CONTEXT_SET_PATTERN,
         REMINDER_GROUP_OFF_PATTERN,
         REMINDER_GROUP_ON_PATTERN,
-        REMINDER_PENDING_INDEX_KEY,
         REMINDER_PERSONAL_OFF_PATTERN,
         REMINDER_PERSONAL_ON_PATTERN,
         REMINDER_STATUS_PATTERN,
@@ -55,7 +54,6 @@ else:
         REMINDER_CONTEXT_SET_PATTERN,
         REMINDER_GROUP_OFF_PATTERN,
         REMINDER_GROUP_ON_PATTERN,
-        REMINDER_PENDING_INDEX_KEY,
         REMINDER_PERSONAL_OFF_PATTERN,
         REMINDER_PERSONAL_ON_PATTERN,
         REMINDER_STATUS_PATTERN,
@@ -77,17 +75,18 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._register_page_apis(context)
         self.before_cache: dict[str, list[dict[str, Any]]] = {}
         self.after_tasks: dict[str, list[dict[str, Any]]] = {}
-        self.reminder_after_tasks: dict[str, list[dict[str, Any]]] = {}
+        self.reminder_before_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self.reminder_after_tasks: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.bot_name_cache: dict[str, str] = {}
         self.page_settings = self._load_page_settings()
         self._font_css_cache_key: tuple[str, int, int] | None = None
         self._font_css_cache_value = ""
         self._receive_order = 0
-        self._group_message_counts: dict[str, int] = {}
+        self._group_message_counts: dict[tuple[str, str], int] = {}
         self._message_count_epoch = uuid.uuid4().hex
         self._kv_locks: dict[str, asyncio.Lock] = {}
-        self._group_pipeline_locks: dict[str, asyncio.Lock] = {}
-        self._latest_group_activity: dict[tuple[str, str], tuple[int, int | None, int]] = {}
+        self._group_pipeline_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._latest_group_activity: dict[tuple[str, str, str], tuple[int, int | None, int]] = {}
         asyncio.create_task(self._maintenance_loop())
 
     async def _maintenance_loop(self) -> None:
@@ -109,11 +108,12 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
             await asyncio.sleep(12 * 3600)
 
-    def _group_pipeline_lock(self, group_id: str) -> asyncio.Lock:
-        lock = self._group_pipeline_locks.get(group_id)
+    def _group_pipeline_lock(self, platform_id: str, group_id: str) -> asyncio.Lock:
+        scope = (platform_id, group_id)
+        lock = self._group_pipeline_locks.get(scope)
         if lock is None:
             lock = asyncio.Lock()
-            self._group_pipeline_locks[group_id] = lock
+            self._group_pipeline_locks[scope] = lock
         return lock
 
     def _register_page_apis(self, context: Context) -> None:
@@ -147,17 +147,18 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     logger.warning(f"[who_at_me] Page API registration failed for {route}: {exc}")
 
     def _event_group_message_count(self, event: AstrMessageEvent, group_id: str) -> int:
-        holder = getattr(event, "message_obj", event)
-        cached = self._numeric_order(getattr(holder, "_who_at_me_group_message_count", None))
-        if cached is not None:
-            return cached
-        count = self._group_message_counts.get(group_id, 0) + 1
-        self._group_message_counts[group_id] = count
-        try:
-            setattr(holder, "_who_at_me_group_message_count", count)
-        except Exception:
-            pass
-        return count
+        scope = (self._reminder_platform_id(event), group_id)
+        # 同一原始消息可能被多个实例包装；缓存绑定事件、实例和本次运行。
+        cache_key = (self._message_count_epoch, *scope)
+        cached = getattr(event, "_who_at_me_group_message_counts", None)
+        if not isinstance(cached, dict):
+            cached = {}
+            setattr(event, "_who_at_me_group_message_counts", cached)
+        if cache_key not in cached:
+            count = self._group_message_counts.get(scope, 0) + 1
+            self._group_message_counts[scope] = count
+            cached[cache_key] = count
+        return cached[cache_key]
 
     def _event_message_sequence(self, event: AstrMessageEvent) -> int | None:
         raw = getattr(event.message_obj, "raw_message", None)
@@ -195,14 +196,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             logger.error(f"[who_at_me] early activity update failed: {exc}")
 
     def _remember_group_activity(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
-        self._latest_group_activity[(group_id, user_id)] = (
+        self._latest_group_activity[(self._reminder_platform_id(event), group_id, user_id)] = (
             self._timestamp(event),
             self._event_message_sequence(event),
             self._event_group_message_count(event, group_id),
         )
 
-    def _returned_after_mention(self, group_id: str, user_id: str, record: dict[str, Any]) -> bool:
-        activity = self._latest_group_activity.get((group_id, user_id))
+    def _returned_after_mention(self, platform_id: str, group_id: str, user_id: str, record: dict[str, Any]) -> bool:
+        activity = self._latest_group_activity.get((platform_id, group_id, user_id))
         if activity is None:
             return False
 
@@ -246,7 +247,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self_id = self._self_id(event)
         if sender_id and self_id and sender_id == self_id:
             if not activity_handled:
-                await self._delete_pending_reminders(group_id, self_id)
+                await self._delete_pending_reminders(self._reminder_platform_id(event), group_id, self_id)
             return
         if sender_id:
             await self._remember_sender_member(event, group_id, sender_id)
@@ -279,7 +280,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
         self_id = self._self_id(event)
         if self_id and sender_id == self_id:
-            await self._delete_pending_reminders(group_id, self_id)
+            await self._delete_pending_reminders(self._reminder_platform_id(event), group_id, self_id)
             return
 
         text = self._normalize_command_text(self._message_text(event))
@@ -297,7 +298,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         text: str,
     ) -> None:
         if self._plugin_command_discards_pending(text):
-            await self._delete_pending_reminders(group_id, sender_id)
+            await self._delete_pending_reminders(self._reminder_platform_id(event), group_id, sender_id)
             return
         await self._deliver_pending_reminders(event, group_id, sender_id)
 
@@ -417,8 +418,8 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             )
         )
 
-    async def _delete_pending_reminders(self, group_id: str, user_id: str) -> None:
-        await self._delete_pending_key(self._reminder_pending_key(group_id, user_id))
+    async def _delete_pending_reminders(self, platform_id: str, group_id: str, user_id: str) -> None:
+        await self._delete_pending_key(self._reminder_pending_key(platform_id, group_id, user_id))
 
     async def _delete_record_key(self, key: str) -> bool:
         async with self._data_operation():
@@ -446,14 +447,15 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         self._drop_records_image_cache(pending, delete_files=True)
         return has_pending
 
-    async def _restore_pending_reminders(self, group_id: str, user_id: str, records: list[dict[str, Any]]) -> None:
+    async def _restore_pending_reminders(self, platform_id: str, group_id: str, user_id: str, records: list[dict[str, Any]]) -> None:
+        records = [record for record in records if record.get("platform_id") == platform_id]
         if not records:
             return
-        key = self._reminder_pending_key(group_id, user_id)
+        key = self._reminder_pending_key(platform_id, group_id, user_id)
         dropped_records: list[dict[str, Any]] = []
         async with self._data_operation():
             async with self._kv_lock(key):
-                current = await self._get_pending_reminders(group_id, user_id)
+                current = await self._get_pending_reminders(platform_id, group_id, user_id)
                 merged = self._dedupe_records([*current, *records])
                 merged.sort(key=self._record_sort_key)
                 kept_records, dropped_records = self._trim_pending_reminders(merged)
@@ -472,16 +474,16 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     async def _take_ready_pending_reminders(
         self,
+        platform_id: str,
         group_id: str,
         user_id: str,
         now_time: int,
-        current_sequence: int | None,
         current_message_count: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        key = self._reminder_pending_key(group_id, user_id)
+        key = self._reminder_pending_key(platform_id, group_id, user_id)
         async with self._data_operation():
             async with self._kv_lock(key):
-                pending = await self._get_pending_reminders(group_id, user_id)
+                pending = await self._get_pending_reminders(platform_id, group_id, user_id)
                 if not pending:
                     return [], []
                 pending = self._dedupe_records(pending)
@@ -495,7 +497,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                         now_time,
                         away_seconds,
                         minimum_messages,
-                        current_sequence,
                         current_message_count,
                     )
                 ]
@@ -511,7 +512,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         now_time: int,
         away_seconds: int,
         minimum_messages: int,
-        current_sequence: int | None,
         current_message_count: int,
     ) -> bool:
         mention_time = self._record_time(record)
@@ -519,20 +519,16 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             return False
         return self._messages_since_mention(
             record,
-            current_sequence,
             current_message_count,
         ) >= minimum_messages
 
     def _messages_since_mention(
         self,
         record: dict[str, Any],
-        current_sequence: int | None,
         current_message_count: int,
     ) -> int:
-        mention_sequence = self._numeric_order(record.get("message_sequence"))
-        if current_sequence is not None and mention_sequence is not None:
-            return max(0, current_sequence - mention_sequence - 1)
-
+        # 协议消息序号不保证连续，不能用差值计算消息条数。
+        # 只比较同一次插件运行内的群消息接收计数。
         if str(record.get("message_count_epoch") or "") != self._message_count_epoch:
             return 0
         mention_count = self._numeric_order(record.get("group_message_count"))
@@ -574,7 +570,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         message_id = self._recall_message_id(event)
         if not message_id:
             return False
-        await self._remove_recalled_message(group_id, message_id)
+        await self._remove_recalled_message(self._reminder_platform_id(event), group_id, message_id)
         return True
 
     async def _record_mentions(
@@ -583,7 +579,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         group_id: str,
         mentions: list[str],
     ) -> None:
-        async with self._group_pipeline_lock(group_id):
+        async with self._group_pipeline_lock(self._reminder_platform_id(event), group_id):
             async with self._data_operation():
                 await self._record_mentions_locked(event, group_id, mentions)
 
@@ -613,7 +609,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             before = list(self.before_cache.get(group_id, [])) if context_on else []
             reminder_before_count = int(reminder_context.get("before", 1))
             reminder_before = (
-                list(self.before_cache.get(group_id, []))[-reminder_before_count:]
+                list(self.reminder_before_cache.get((self._reminder_platform_id(event), group_id), []))[-reminder_before_count:]
                 if reminder_context_on and reminder_before_count > 0
                 else []
             )
@@ -639,11 +635,12 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                     reminder_before,
                 )
                 if queued and reminder_context_on and int(reminder_context.get("after", 0)) > 0:
-                    tasks = self.reminder_after_tasks.setdefault(group_id, [])
+                    tasks = self.reminder_after_tasks.setdefault((self._reminder_platform_id(event), group_id), [])
                     tasks.append(
                         {
                             "target": target,
                             "time": record["time"],
+                            "message_id": record.get("message_id"),
                             "count": 0,
                             "limit": int(reminder_context.get("after", 0)),
                         }
@@ -654,6 +651,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
         if current:
             await self._append_before_context_cache(group_id, current)
+            self._append_reminder_before_context_cache(self._reminder_platform_id(event), group_id, current)
 
     async def _record_context_message(
         self,
@@ -663,7 +661,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         *,
         append_to_cache: bool,
     ) -> dict[str, Any]:
-        async with self._group_pipeline_lock(group_id):
+        async with self._group_pipeline_lock(self._reminder_platform_id(event), group_id):
             async with self._data_operation():
                 return await self._record_context_message_locked(
                     event,
@@ -697,9 +695,10 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if context_on and current:
             await self._append_after_context(group_id, current)
         if reminder_context_on and current:
-            await self._append_reminder_after_context(group_id, current)
+            await self._append_reminder_after_context(self._reminder_platform_id(event), group_id, current)
         if append_to_cache and current:
             await self._append_before_context_cache(group_id, current)
+            self._append_reminder_before_context_cache(self._reminder_platform_id(event), group_id, current)
 
         return {
             "context_on": context_on,
@@ -714,6 +713,13 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         cache = self.before_cache.setdefault(group_id, [])
         cache.append(current)
         del cache[:-max(self._query_context_max_messages(), self._max_reminder_context())]
+
+    def _append_reminder_before_context_cache(self, platform_id: str, group_id: str, current: dict[str, Any]) -> None:
+        # 只引用查询侧已缓存的图片；生成待提醒时再复制成提醒自己的文件。
+        cache = self.reminder_before_cache.setdefault((platform_id, group_id), [])
+        cache.append(current)
+        limit = self._max_reminder_context()
+        del cache[:max(0, len(cache) - limit)]
 
     async def _append_after_context(self, group_id: str, current: dict[str, Any]) -> None:
         async with self._data_operation():
@@ -742,22 +748,23 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             if task["count"] >= self._query_context_max_messages():
                 tasks.pop(idx)
 
-    async def _append_reminder_after_context(self, group_id: str, current: dict[str, Any]) -> None:
+    async def _append_reminder_after_context(self, platform_id: str, group_id: str, current: dict[str, Any]) -> None:
         async with self._data_operation():
-            async with self._kv_lock(f"runtime:after-context:{group_id}"):
-                await self._append_reminder_after_context_locked(group_id, current)
+            async with self._kv_lock(f"runtime:{self._reminder_pending_prefix(platform_id, group_id)}"):
+                await self._append_reminder_after_context_locked(platform_id, group_id, current)
 
-    async def _append_reminder_after_context_locked(self, group_id: str, current: dict[str, Any]) -> None:
-        tasks = self.reminder_after_tasks.get(group_id, [])
+    async def _append_reminder_after_context_locked(self, platform_id: str, group_id: str, current: dict[str, Any]) -> None:
+        tasks = self.reminder_after_tasks.get((platform_id, group_id), [])
         for idx in range(len(tasks) - 1, -1, -1):
             task = tasks[idx]
-            key = self._reminder_pending_key(group_id, task["target"])
+            key = self._reminder_pending_key(platform_id, group_id, task["target"])
             async with self._kv_lock(key):
-                pending = await self._get_pending_reminders(group_id, task["target"])
+                pending = await self._get_pending_reminders(platform_id, group_id, task["target"])
                 changed = False
                 for record in pending:
-                    if record.get("time") == task["time"]:
-                        record.setdefault("after", []).append(current)
+                    if record.get("time") == task["time"] and record.get("message_id") == task["message_id"]:
+                        context = await self._cache_record_images(self._reminder_record_copy(current))
+                        record.setdefault("after", []).append(context)
                         changed = True
                         break
                 if changed:
@@ -785,24 +792,29 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         if not await self._reminder_user_enabled(group_id, target):
             return False
 
-        pending_record = dict(record)
+        platform_id = self._reminder_platform_id(event)
+        if self._returned_after_mention(platform_id, group_id, target, record):
+            return False
+        # 查询上下文仍使用旧数据域，关闭提醒上下文时也不能继承它；先去掉再复制图片。
+        pending_record = self._reminder_record_copy(
+            {key: value for key, value in record.items() if key not in ("is_context", "before", "after")}
+        )
+        pending_record["platform_id"] = platform_id
         pending_record["target"] = target
         if context_config.get("enabled"):
             pending_record["is_context"] = True
-            pending_record["before"] = list(before)
+            pending_record["before"] = [self._reminder_record_copy(item) for item in before]
             pending_record["after"] = []
-        if self._returned_after_mention(group_id, target, pending_record):
-            return False
         pending_record = await self._cache_record_images(pending_record)
 
-        key = self._reminder_pending_key(group_id, target)
+        key = self._reminder_pending_key(platform_id, group_id, target)
         dropped_records: list[dict[str, Any]] = []
         duplicate = False
         returned = False
         async with self._data_operation():
             async with self._kv_lock(key):
-                pending = await self._get_pending_reminders(group_id, target)
-                if self._returned_after_mention(group_id, target, pending_record):
+                pending = await self._get_pending_reminders(platform_id, group_id, target)
+                if self._returned_after_mention(platform_id, group_id, target, pending_record):
                     returned = True
                 elif any(self._records_are_duplicate(item, pending_record) for item in pending):
                     duplicate = True
@@ -819,17 +831,18 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         return not (returned or duplicate)
 
     async def _deliver_pending_reminders(self, event: AstrMessageEvent, group_id: str, user_id: str) -> None:
+        platform_id = self._reminder_platform_id(event)
         if not await self._reminder_group_enabled(event, group_id):
             return
         if not await self._reminder_user_enabled(group_id, user_id):
-            await self._delete_pending_reminders(group_id, user_id)
+            await self._delete_pending_reminders(platform_id, group_id, user_id)
             return
 
         pending, original_pending = await self._take_ready_pending_reminders(
+            platform_id,
             group_id,
             user_id,
             self._timestamp(event),
-            self._event_message_sequence(event),
             self._event_group_message_count(event, group_id),
         )
         if not pending:
@@ -863,7 +876,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         ).strip()
         if self._render_text_only():
             if reminder_text and not await self._try_send(event, event.plain_result(reminder_text)):
-                await self._restore_pending_reminders(group_id, user_id, original_pending)
+                await self._restore_pending_reminders(platform_id, group_id, user_id, original_pending)
                 return
             delivered = await self._try_send_records_forward_text(
                 event,
@@ -878,7 +891,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 f"[谁艾特我] 合并转发发送失败（text 渲染模式），未向群内提示，"
                 f"已保留 {len(original_pending)} 条待提醒记录: group={group_id} user={user_id}"
             )
-            await self._restore_pending_reminders(group_id, user_id, original_pending)
+            await self._restore_pending_reminders(platform_id, group_id, user_id, original_pending)
             return
 
         pending, temporary_image_paths = await self._prepare_records_for_render(pending)
@@ -957,7 +970,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
             if delivered:
                 self._drop_records_image_cache(original_pending, delete_files=True)
             else:
-                await self._restore_pending_reminders(group_id, user_id, original_pending)
+                await self._restore_pending_reminders(platform_id, group_id, user_id, original_pending)
         finally:
             self._delete_cached_image_paths(temporary_image_paths)
 
@@ -1327,7 +1340,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
     async def _clear_self(self, event: AstrMessageEvent, group_id: str) -> Any:
         sender_id = self._sender_id(event)
         key = self._record_key(group_id, sender_id)
-        pending_key = self._reminder_pending_key(group_id, sender_id)
+        pending_key = self._reminder_pending_key(self._reminder_platform_id(event), group_id, sender_id)
         removed_records = await self._delete_record_key(key)
         removed_pending = await self._delete_pending_key(pending_key)
         if not removed_records and not removed_pending:
@@ -1343,7 +1356,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         keys = await self.get_kv_data(INDEX_KEY, [])
         if not isinstance(keys, list):
             keys = []
-        pending_keys = set(await self._pending_index_keys())
+        platform_id = self._reminder_platform_id(event)
+        pending_prefix = self._reminder_pending_prefix(platform_id)
+        pending_keys = {key for key in await self._pending_index_keys() if key.startswith(pending_prefix)}
         for key in keys:
             if not isinstance(key, str):
                 continue
@@ -1351,11 +1366,6 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
                 records = await self.get_kv_data(key, [])
                 await self.delete_kv_data(key)
             self._drop_records_image_cache(records, delete_files=True)
-            if key.startswith("records:"):
-                body = key[len("records:") :]
-                if ":" in body:
-                    group_id, target = body.split(":", 1)
-                    pending_keys.add(self._reminder_pending_key(group_id, target))
         await self.delete_kv_data(INDEX_KEY)
 
         context_keys = await self.get_kv_data(CONTEXT_INDEX_KEY, [])
@@ -1367,15 +1377,14 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         await self.delete_kv_data(CONTEXT_INDEX_KEY)
 
         for key in pending_keys:
-            async with self._kv_lock(key):
-                pending = await self.get_kv_data(key, [])
-                await self.delete_kv_data(key)
-            self._drop_records_image_cache(pending, delete_files=True)
-        await self.delete_kv_data(REMINDER_PENDING_INDEX_KEY)
+            await self._delete_pending_key_locked(key)
 
         self.before_cache.clear()
         self.after_tasks.clear()
-        self.reminder_after_tasks.clear()
+        for cache in (self.reminder_before_cache, self.reminder_after_tasks):
+            for scope in list(cache):
+                if scope[0] == platform_id:
+                    del cache[scope]
         return event.plain_result("已成功清除全部艾特数据")
 
     def _build_blocks(
@@ -1882,6 +1891,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     async def terminate(self):
         self.before_cache.clear()
+        self.reminder_before_cache.clear()
         self.after_tasks.clear()
         self.reminder_after_tasks.clear()
         self._group_pipeline_locks.clear()
