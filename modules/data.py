@@ -6,7 +6,9 @@ import copy
 from contextlib import asynccontextmanager
 import hashlib
 import ipaddress
+import os
 import re
+import shutil
 import socket
 import time
 import uuid
@@ -273,6 +275,61 @@ class DataMixin:
             temporary_paths.update(self._record_image_cache_paths(copied) - original_paths)
             prepared.append(copied)
         return prepared, temporary_paths
+
+    def _reminder_record_copy(self, record: dict[str, Any]) -> dict[str, Any]:
+        # 提醒单独拥有图片文件：复制本地缓存，不重新下载，也不共用查询或其他提醒的路径。
+        copied = copy.deepcopy(record)
+        self._own_record_image_cache(copied)
+        return copied
+
+    def _own_record_image_cache(self, record: dict[str, Any]) -> None:
+        for holder in (record, record.get("quote")):
+            if not isinstance(holder, dict) or "image_cache" not in holder:
+                continue
+            entries = holder.pop("image_cache")
+            owned = [
+                entry
+                for entry in (
+                    self._duplicate_image_cache_entry(item)
+                    for item in (entries if isinstance(entries, list) else [])
+                )
+                if entry
+            ]
+            if owned:
+                holder["image_cache"] = owned
+
+        # 媒体封面沿用原有逻辑，在缓存记录时重新获取。
+        media = record.get("media")
+        if isinstance(media, list):
+            for item in media:
+                if isinstance(item, dict):
+                    item.pop("cover_cache", None)
+
+        for key in ("before", "after"):
+            items = record.get(key)
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        self._own_record_image_cache(item)
+
+    def _duplicate_image_cache_entry(self, entry: Any) -> dict[str, str] | None:
+        # 无法复制的条目直接丢弃，后续缓存时按原有逻辑重新获取。
+        if not isinstance(entry, dict):
+            return None
+        try:
+            cache_dir = self._message_image_cache_dir().resolve()
+            source = Path(str(entry.get("local") or "")).resolve()
+            if cache_dir not in source.parents or not source.is_file() or not source.suffix:
+                return None
+            target = self._new_message_image_cache_path(source.suffix)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copyfile(source, target)
+        except OSError:
+            return None
+        return {**entry, "local": str(target)}
 
     def _record_image_cache_paths(self, record: dict[str, Any]) -> set[str]:
         result: set[str] = set()
@@ -814,15 +871,17 @@ class DataMixin:
             return []
         return records[-self._max_records_per_target():]
 
-    async def _get_pending_reminders(self, group_id: str, target: str) -> list[dict[str, Any]]:
-        pending = await self.get_kv_data(self._reminder_pending_key(group_id, target), [])
-        return pending if isinstance(pending, list) else []
+    async def _get_pending_reminders(self, platform_id: str, group_id: str, target: str) -> list[dict[str, Any]]:
+        pending = await self.get_kv_data(self._reminder_pending_key(platform_id, group_id, target), [])
+        if not isinstance(pending, list):
+            return []
+        return [record for record in pending if isinstance(record, dict) and record.get("platform_id") == platform_id]
 
-    async def _remove_recalled_message(self, group_id: str, message_id: str) -> int:
+    async def _remove_recalled_message(self, platform_id: str, group_id: str, message_id: str) -> int:
         async with self._data_operation():
-            return await self._remove_recalled_message_locked(group_id, message_id)
+            return await self._remove_recalled_message_locked(platform_id, group_id, message_id)
 
-    async def _remove_recalled_message_locked(self, group_id: str, message_id: str) -> int:
+    async def _remove_recalled_message_locked(self, platform_id: str, group_id: str, message_id: str) -> int:
         message_id = str(message_id or "").strip()
         if not group_id or not message_id:
             return 0
@@ -861,7 +920,7 @@ class DataMixin:
             pending_keys = await self.get_kv_data(REMINDER_PENDING_INDEX_KEY, [])
         if not isinstance(pending_keys, list):
             pending_keys = []
-        pending_prefix = f"reminder:pending:{group_id}:"
+        pending_prefix = self._reminder_pending_prefix(platform_id, group_id)
 
         for pending_key in list(pending_keys):
             if not isinstance(pending_key, str) or not pending_key.startswith(pending_prefix):
@@ -898,6 +957,15 @@ class DataMixin:
                 removed += count
                 self.before_cache[group_id] = next_cache
                 self._drop_records_image_cache(removed_cache_records, delete_files=True)
+        scope = (platform_id, group_id)
+        cache = self.reminder_before_cache.get(scope, [])
+        # 提醒前文缓存只引用查询侧图片，文件由查询侧删除。
+        next_cache, count = self._remove_recalled_from_records(cache, message_id, [])
+        if count:
+            removed += count
+            self.reminder_before_cache[scope] = next_cache
+        tasks = self.reminder_after_tasks.get(scope, [])
+        tasks[:] = [task for task in tasks if str(task.get("message_id") or "") != message_id]
         return removed
 
     def _remove_recalled_from_records(
@@ -958,10 +1026,11 @@ class DataMixin:
             info.setdefault("nickname", sender_name)
         if not self._member_info_has_name(info):
             return
-        await self._remember_member_info(group_id, user_id, info, complete=bool(info.get("role")))
+        await self._remember_member_info(self._reminder_platform_id(event), group_id, user_id, info, complete=bool(info.get("role")))
 
     async def _remember_member_info(
         self,
+        platform_id: str,
         group_id: str,
         user_id: str,
         info: dict[str, Any],
@@ -983,11 +1052,11 @@ class DataMixin:
         }
         if not self._member_info_has_name(data):
             return
-        if self._member_info_recently_remembered(group_id, user_id, data):
+        if self._member_info_recently_remembered(platform_id, group_id, user_id, data):
             return
-        await self.put_kv_data(self._member_cache_key(group_id, user_id), data)
+        await self.put_kv_data(self._member_cache_key(platform_id, group_id, user_id), data)
 
-    def _member_info_recently_remembered(self, group_id: str, user_id: str, data: dict[str, Any]) -> bool:
+    def _member_info_recently_remembered(self, platform_id: str, group_id: str, user_id: str, data: dict[str, Any]) -> bool:
         cache = getattr(self, "_member_info_write_cache", None)
         if not isinstance(cache, dict):
             cache = {}
@@ -997,7 +1066,7 @@ class DataMixin:
             expired = [key for key, item in cache.items() if now - float(item.get("time") or 0) > MEMBER_CACHE_TTL_SECONDS]
             for key in expired[:1024]:
                 cache.pop(key, None)
-        key = (str(group_id), str(user_id))
+        key = (platform_id, str(group_id), str(user_id))
         fingerprint = tuple(str(data.get(name) or "") for name in ("card", "nickname", "name", "role", "level", "title", "member_title"))
         cached = cache.get(key)
         if cached and cached.get("fingerprint") == fingerprint and now - float(cached.get("time") or 0) < MEMBER_CACHE_TTL_SECONDS:
@@ -1005,8 +1074,8 @@ class DataMixin:
         cache[key] = {"fingerprint": fingerprint, "time": now}
         return False
 
-    async def _cached_member_info(self, group_id: str, user_id: str) -> dict[str, Any]:
-        data = await self.get_kv_data(self._member_cache_key(group_id, user_id), {})
+    async def _cached_member_info(self, platform_id: str, group_id: str, user_id: str) -> dict[str, Any]:
+        data = await self.get_kv_data(self._member_cache_key(platform_id, group_id, user_id), {})
         return data if isinstance(data, dict) else {}
 
     def _member_info_has_name(self, info: dict[str, Any]) -> bool:
@@ -1020,7 +1089,7 @@ class DataMixin:
         info = self._member_info_from_event(event) if user_id == self._sender_id(event) else {}
         if not user_id:
             return info
-        cached = await self._cached_member_info(group_id, user_id)
+        cached = await self._cached_member_info(self._reminder_platform_id(event), group_id, user_id)
         for key, value in cached.items():
             if key not in {"time", "complete"} and value and not info.get(key):
                 info[key] = value
@@ -1047,7 +1116,7 @@ class DataMixin:
             if list_info:
                 info.update(list_info)
         if self._member_info_has_name(info):
-            await self._remember_member_info(group_id, user_id, info, complete=True)
+            await self._remember_member_info(self._reminder_platform_id(event), group_id, user_id, info, complete=True)
         return info
 
     async def _member_info_from_group_member_list(
@@ -1217,7 +1286,7 @@ class DataMixin:
         group_status = "开启" if await self._reminder_group_enabled(event, group_id) else "关闭"
         user_status = "开启" if await self._reminder_user_enabled(group_id, sender_id) else "关闭"
         context_status = "开启" if context_config.get("enabled") else "关闭"
-        pending_count = len(await self._get_pending_reminders(group_id, sender_id)) if sender_id else 0
+        pending_count = len(await self._get_pending_reminders(self._reminder_platform_id(event), group_id, sender_id)) if sender_id else 0
         current_umo = self._event_umo(event)
         global_umos = self._global_enabled_group_umos()
         enabled_umos = self._reminder_enabled_group_umos()

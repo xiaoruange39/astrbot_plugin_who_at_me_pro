@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import quote
 
 try:
     from .constants import *
@@ -171,11 +172,22 @@ class ConfigMixin:
     def _reminder_user_key(self, group_id: str, user_id: str) -> str:
         return f"reminder:user_enabled:{group_id}:{user_id}"
 
-    def _reminder_pending_key(self, group_id: str, user_id: str) -> str:
-        return f"reminder:pending:{group_id}:{user_id}"
+    def _reminder_platform_id(self, event: Any) -> str:
+        # 提醒归属只接受实例 ID，不能回退到适配器名称或当前唯一 Bot。
+        platform_id = event.get_platform_id()
+        if not isinstance(platform_id, str) or not platform_id.strip():
+            raise ValueError("艾特提醒缺少 platform_id")
+        return platform_id
+
+    def _reminder_pending_prefix(self, platform_id: str, group_id: str | None = None) -> str:
+        prefix = f"reminder:pending:v2:{quote(platform_id, safe='')}:"
+        return prefix if group_id is None else f"{prefix}{quote(group_id, safe='')}:"
+
+    def _reminder_pending_key(self, platform_id: str, group_id: str, user_id: str) -> str:
+        return f"{self._reminder_pending_prefix(platform_id, group_id)}{quote(user_id, safe='')}"
 
     def _reminder_context_key(self, group_id: str) -> str:
         return f"reminder:context:{group_id}"
 
-    def _member_cache_key(self, group_id: str, user_id: str) -> str:
-        return f"member:name:{group_id}:{user_id}"
+    def _member_cache_key(self, platform_id: str, group_id: str, user_id: str) -> str:
+        return f"member:name:v2:{quote(platform_id, safe='')}:{quote(group_id, safe='')}:{quote(user_id, safe='')}"
