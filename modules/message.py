@@ -402,7 +402,29 @@ class MessageMixin:
             return text if allowed else ""
         if text.startswith("base64://") or re.match(r"^data:image/", text, re.I):
             return text if self._inline_image_source_within_limit(text) else ""
-        return self._renderable_image(text)
+        return self._validated_local_image_path(text)
+
+    def _validated_local_image_path(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if re.match(r"^file://", text, re.I):
+            try:
+                from urllib.parse import unquote, urlparse
+
+                parsed = urlparse(text)
+                text = unquote(parsed.path or "")
+                if re.match(r"^/[A-Za-z]:/", text):
+                    text = text[1:]
+            except Exception:
+                return ""
+        try:
+            resolved = Path(text).resolve()
+            if resolved.exists() and resolved.is_file() and self._is_allowed_local_image_path(resolved):
+                return str(resolved)
+        except (OSError, ValueError):
+            pass
+        return ""
 
     def _can_resolve_onebot_image_source(self, value: str) -> bool:
         text = str(value or "").strip()

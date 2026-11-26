@@ -177,11 +177,12 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=10000)
     async def mark_group_activity_early(self, event: AstrMessageEvent):
         group_id = self._group_id(event)
-        if group_id:
-            self._event_group_message_count(event, group_id)
-            sender_id = self._sender_id(event)
-            if sender_id:
-                self._remember_group_activity(event, group_id, sender_id)
+        if not group_id or not await self._group_active(event, group_id):
+            return
+        self._event_group_message_count(event, group_id)
+        sender_id = self._sender_id(event)
+        if sender_id:
+            self._remember_group_activity(event, group_id, sender_id)
         try:
             setattr(event, "_who_at_me_activity_handled", True)
         except Exception:
@@ -222,8 +223,9 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
     @filter.event_message_type(GROUP_NOTICE_EVENT_TYPE, priority=10001)
     async def on_group_notice(self, event: AstrMessageEvent):
         group_id = self._group_id(event)
-        if group_id:
-            await self._handle_recall_event(event, group_id)
+        if not group_id or not await self._group_active(event, group_id):
+            return
+        await self._handle_recall_event(event, group_id)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
     async def on_group_message(self, event: AstrMessageEvent):
@@ -231,17 +233,37 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
         group_id = self._group_id(event)
         if not group_id:
             return
-        if await self._handle_recall_event(event, group_id):
-            return
 
         text = self._normalize_command_text(self._message_text(event))
         is_plugin_command = self._is_plugin_command(text)
-        activity_handled = bool(getattr(event, "_who_at_me_activity_handled", False))
         if not self._global_group_allowed(event):
             if is_plugin_command:
                 self._stop_event(event)
                 self._disable_llm(event)
             return
+
+        if not await self._reminder_group_enabled(event, group_id):
+            if not is_plugin_command:
+                return
+            self._stop_event(event)
+            self._disable_llm(event)
+            stripped = text.strip()
+            if (
+                REMINDER_GROUP_ON_PATTERN.match(stripped)
+                or REMINDER_STATUS_PATTERN.match(stripped)
+                or HELP_PATTERN.match(stripped)
+            ):
+                command_result = await self._handle_command(event, group_id, text, self._mentions(event))
+                for result in command_result or []:
+                    yield result
+                return
+            yield event.plain_result("本群已关闭谁艾特我功能，请由群管或主人发送 #开启本群艾特提醒 开启。")
+            return
+
+        if await self._handle_recall_event(event, group_id):
+            return
+
+        activity_handled = bool(getattr(event, "_who_at_me_activity_handled", False))
 
         sender_id = self._sender_id(event)
         self_id = self._self_id(event)
@@ -271,7 +293,7 @@ class WhoAtMePlugin(ConfigMixin, RenderingMixin, DataMixin, MessageMixin, PageAp
 
     async def _mark_group_activity(self, event: AstrMessageEvent) -> None:
         group_id = self._group_id(event)
-        if not group_id or not self._global_group_allowed(event):
+        if not group_id or not await self._group_active(event, group_id):
             return
 
         sender_id = self._sender_id(event)
