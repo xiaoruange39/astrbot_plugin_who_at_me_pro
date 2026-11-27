@@ -70,18 +70,18 @@
                      "type":  "object",
                      "items":  {
                                    "default_group_enabled":  {
-                                                                 "description":  "新群默认开启被动艾特提醒",
+                                                                 "description":  "新群默认开启本群谁艾特我功能",
                                                                  "type":  "bool",
                                                                  "default":  true,
-                                                                 "hint":  "关闭后不会生成回群提醒；仍可用 #开启本群艾特提醒 单独开启。"
+                                                                 "hint":  "关闭后本群彻底静默（不记录艾特历史、不缓存群成员、不读写数据库）；群管或主人可用 #开启本群艾特提醒 单独开启。"
                                                              },
                                    "enabled_group_umos":  {
-                                                              "description":  "限定开启提醒的群 UMO 名单",
+                                                              "description":  "限定开启功能的群 UMO 名单",
                                                               "type":  "list",
                                                               "default":  [
 
                                                                           ],
-                                                              "hint":  "留空则不限制群，继续使用默认群开关和群命令；填入后只有这些 UMO 的群会生成/推送提醒。可用 #艾特提醒状态 查看当前群 UMO。"
+                                                              "hint":  "留空则不限制群，继续使用默认群开关和群命令；填入后只有这些 UMO 的群会记录艾特与触发提醒，其他群彻底静默且不读写数据库。可用 #艾特提醒状态 查看当前群 UMO。"
                                                           },
                                    "default_user_enabled":  {
                                                                 "description":  "用户默认接收艾特提醒",

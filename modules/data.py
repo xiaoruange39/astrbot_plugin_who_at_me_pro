@@ -130,8 +130,39 @@ class DataMixin:
             setattr(self, "_preferences_write_lock_instance", lock)
         return lock
 
+    @staticmethod
+    def _is_inline_image_source(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        text = value.strip().lower()
+        return text.startswith("base64://") or text.startswith("data:image/")
+
+    def _sanitize_kv_value(self, value: Any) -> Any:
+        if isinstance(value, list):
+            sanitized = []
+            for item in value:
+                if self._is_inline_image_source(item):
+                    continue
+                sanitized.append(self._sanitize_kv_value(item))
+            return sanitized
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            for k, v in value.items():
+                if self._is_inline_image_source(v):
+                    if k == "source":
+                        digest = str(value.get("hash") or "").strip()
+                        if digest:
+                            result[k] = f"sha256:{digest}"
+                    continue
+                result[k] = self._sanitize_kv_value(v)
+            return result
+        if self._is_inline_image_source(value):
+            return ""
+        return value
+
     async def put_kv_data(self, key: str, value: Any) -> Any:
-        return await self._run_kv_write(super().put_kv_data, key, value)
+        sanitized = self._sanitize_kv_value(value)
+        return await self._run_kv_write(super().put_kv_data, key, sanitized)
 
     async def delete_kv_data(self, key: str) -> Any:
         return await self._run_kv_write(super().delete_kv_data, key)
@@ -258,9 +289,26 @@ class DataMixin:
 
         new_cache = await self._cache_images(candidates, existing_hashes=cached_hashes)
         if existing_cache or new_cache:
-            record["image_cache"] = self._dedupe_image_cache_entries([*existing_cache, *new_cache])
+            cleaned_existing = []
+            for item in existing_cache:
+                entry = dict(item)
+                if self._is_inline_image_source(entry.get("source")):
+                    digest = self._image_cache_hash(entry)
+                    if digest:
+                        entry["source"] = f"sha256:{digest}"
+                    else:
+                        entry.pop("source", None)
+                cleaned_existing.append(entry)
+            record["image_cache"] = self._dedupe_image_cache_entries([*cleaned_existing, *new_cache])
         else:
             record.pop("image_cache", None)
+
+        if "images" in record and isinstance(record["images"], list):
+            record["images"] = [
+                img for img in record["images"] if not self._is_inline_image_source(img)
+            ]
+        if "image" in record and self._is_inline_image_source(record["image"]):
+            record.pop("image", None)
 
     async def _prepare_records_for_render(
         self,
@@ -378,6 +426,8 @@ class DataMixin:
             cached = await self._cache_image(cover)
             if cached:
                 item["cover_cache"] = cached
+                if self._is_inline_image_source(cover):
+                    item.pop("cover", None)
 
     async def _cache_images(self, images: Any, existing_hashes: set[str] | None = None) -> list[dict[str, str]]:
         if isinstance(images, str):
@@ -419,7 +469,8 @@ class DataMixin:
             output = self._new_message_image_cache_path(suffix)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(data)
-            return {"source": source, "local": str(output), "hash": digest}
+            stored_source = f"sha256:{digest}" if self._is_inline_image_source(source) else source
+            return {"source": stored_source, "local": str(output), "hash": digest}
         except Exception as exc:
             logger.debug(f"[谁艾特我] 缓存消息图片失败: {type(exc).__name__}: {exc}")
             return None
@@ -1063,13 +1114,13 @@ class DataMixin:
             self._member_info_write_cache = cache
         now = time.time()
         if len(cache) > 2048:
-            expired = [key for key, item in cache.items() if now - float(item.get("time") or 0) > MEMBER_CACHE_TTL_SECONDS]
+            expired = [key for key, item in cache.items() if now - float(item.get("time") or 0) > MEMBER_WRITE_CACHE_TTL_SECONDS]
             for key in expired[:1024]:
                 cache.pop(key, None)
         key = (platform_id, str(group_id), str(user_id))
         fingerprint = tuple(str(data.get(name) or "") for name in ("card", "nickname", "name", "role", "level", "title", "member_title"))
         cached = cache.get(key)
-        if cached and cached.get("fingerprint") == fingerprint and now - float(cached.get("time") or 0) < MEMBER_CACHE_TTL_SECONDS:
+        if cached and cached.get("fingerprint") == fingerprint and now - float(cached.get("time") or 0) < MEMBER_WRITE_CACHE_TTL_SECONDS:
             return True
         cache[key] = {"fingerprint": fingerprint, "time": now}
         return False
@@ -1235,15 +1286,33 @@ class DataMixin:
             info["name"] = str(data["name"])
         return info
 
+    async def _group_active(self, event: AstrMessageEvent, group_id: str) -> bool:
+        if not group_id or not self._global_group_allowed(event):
+            return False
+        return await self._reminder_group_enabled(event, group_id)
+
     async def _reminder_group_enabled(self, event: AstrMessageEvent, group_id: str) -> bool:
         enabled_umos = self._reminder_enabled_group_umos()
         if enabled_umos:
             return self._event_umo(event) in enabled_umos
 
-        value = await self.get_kv_data(self._reminder_group_key(group_id), None)
+        cache = getattr(self, "_reminder_group_enabled_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._reminder_group_enabled_cache = cache
+        if group_id in cache:
+            value = cache[group_id]
+        else:
+            value = await self.get_kv_data(self._reminder_group_key(group_id), None)
+            cache[group_id] = value
         return self._config_bool("reminder", "default_group_enabled", default=True) if value is None else bool(value)
 
     async def _set_reminder_group_enabled(self, group_id: str, enabled: bool) -> None:
+        cache = getattr(self, "_reminder_group_enabled_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._reminder_group_enabled_cache = cache
+        cache[group_id] = bool(enabled)
         await self.put_kv_data(self._reminder_group_key(group_id), bool(enabled))
 
     async def _reminder_user_enabled(self, group_id: str, user_id: str) -> bool:
